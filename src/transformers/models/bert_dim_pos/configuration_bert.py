@@ -133,7 +133,6 @@ class BertDimPosConfig(PretrainedConfig):
         self.position_embedding_type = position_embedding_type
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
-        self.pos_dim = self.hidden_size // 2
 
 
 class BertOnnxConfig(OnnxConfig):
