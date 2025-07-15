@@ -261,18 +261,6 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
                 extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask)
             elif self.extrapolation_method == 'fourier':
                 extrapolated = self._fourier_extrapolation(position_ids, out_range_mask)
-            elif self.extrapolation_method == 'linear_cyclic':
-                extrapolated = self._linear_cyclic_extrapolation(position_ids, out_range_mask)
-            elif self.extrapolation_method == 'learned':
-                extrapolated = self._learned_extrapolation(position_ids, out_range_mask)
-            elif self.extrapolation_method == 'alibi_style':
-                extrapolated = self._alibi_style_extrapolation(position_ids, out_range_mask)
-            else:
-                # Fallback : répéter cycliquement les embeddings
-                # Ici on pourrait utiliser num_pos_learned au lieu de max_position_embeddings
-                # pour le wrapping, selon ce qui est souhaité
-                wrapped_positions = position_ids % self.num_pos_learned
-                extrapolated = self.positional_embeddings(wrapped_positions)
             
             embeddings = torch.where(out_range_mask.unsqueeze(-1), extrapolated, embeddings)
         
@@ -301,69 +289,21 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         
         # Normaliser les positions
         positions = position_ids.float() / self.max_position_embeddings
-        positions = positions.unsqueeze(-1).unsqueeze(-1)  # [batch, seq, 1, 1]
+        positions = positions.unsqueeze(-1)  # [batch, seq, 1]
         
         # Reconstruire avec les coefficients de Fourier
         freqs = self.fourier_freqs.unsqueeze(0).unsqueeze(0)  # [1, 1, K]
-        phase_shift = 2 * math.pi * positions * freqs  # [batch, seq, 1, K]
+        phase_shift = 2 * math.pi * positions * freqs  # [batch, seq, K]
         
         # Partie réelle et imaginaire
-        real_part = torch.cos(phase_shift) @ self.fourier_coeffs.real.T
-        imag_part = torch.sin(phase_shift) @ self.fourier_coeffs.imag.T
+        # self.fourier_coeffs a la forme [K, pos_dim]
+        # phase_shift a la forme [batch, seq, K]
+        # On veut obtenir [batch, seq, pos_dim]
+        real_part = torch.cos(phase_shift) @ self.fourier_coeffs.real  # [batch, seq, pos_dim]
+        imag_part = torch.sin(phase_shift) @ self.fourier_coeffs.imag  # [batch, seq, pos_dim]
         
         embeddings = real_part - imag_part
         return embeddings * 2 / self.max_position_embeddings
-
-    def _linear_cyclic_extrapolation(self, position_ids, mask):
-        """Interpolation cyclique avec décalage linéaire"""
-        # Position de base (cyclique)
-        base_positions = position_ids % self.max_position_embeddings
-        base_embeddings = self.positional_embeddings(base_positions)
-        
-        # Nombre de cycles complets
-        cycles = (position_ids // self.max_position_embeddings).float().unsqueeze(-1)
-        
-        # Direction de décalage (différence moyenne entre positions consécutives)
-        if not hasattr(self, '_position_drift'):
-            with torch.no_grad():
-                diffs = self.positional_embeddings.weight[1:] - self.positional_embeddings.weight[:-1]
-                self._position_drift = diffs.mean(dim=0)
-        
-        # Appliquer le décalage proportionnel au nombre de cycles
-        offset = cycles * self._position_drift
-        return base_embeddings + offset
-
-    def _learned_extrapolation(self, position_ids, mask):
-        """Transformation apprise pour l'extrapolation"""
-        # Normaliser les positions en [0, 1] et au-delà
-        normalized_pos = position_ids.float() / self.max_position_embeddings
-        normalized_pos = normalized_pos.unsqueeze(-1)  # [batch, seq, 1]
-        
-        # Appliquer la transformation
-        transform = self.position_transform(normalized_pos)
-        
-        # Combiner avec l'embedding cyclique de base
-        base_positions = position_ids % self.max_position_embeddings
-        base_embeddings = self.positional_embeddings(base_positions)
-        
-        # Mélange progressif : plus on s'éloigne, plus on utilise la transformation
-        alpha = torch.sigmoid((normalized_pos - 1) * 5).squeeze(-1).unsqueeze(-1)
-        return (1 - alpha) * base_embeddings + alpha * transform
-
-    def _alibi_style_extrapolation(self, position_ids, mask):
-        """Extrapolation inspirée d'ALiBi avec decay logarithmique"""
-        # Embeddings de base
-        base_positions = torch.clamp(position_ids, max=self.max_position_embeddings - 1)
-        embeddings = self.positional_embeddings(base_positions)
-        
-        # Facteur de décroissance pour les positions lointaines
-        overflow = (position_ids - self.max_position_embeddings + 1).float()
-        overflow = torch.clamp(overflow, min=0)
-        
-        # Décroissance logarithmique
-        decay = 1.0 / (1.0 + torch.log1p(overflow).unsqueeze(-1))
-        
-        return embeddings * decay
 
     def forward(
         self,
