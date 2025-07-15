@@ -179,6 +179,10 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         #     "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
         # )
         self.extrapolation_method = config.extrapolation_method
+        self.num_pos_learned = config.num_pos_learned
+        # Si num_pos_learned n'est pas spécifié, utiliser max_position_embeddings
+        if self.num_pos_learned is None:
+            self.num_pos_learned = self.max_position_embeddings
 
         if self.extrapolation_method == 'fourier':
             self.register_buffer('fourier_coeffs', None)
@@ -220,12 +224,17 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             self._initialized_fourier = True
 
     def extrapolate_positions(self, position_ids):
-        """Extrapoler les embeddings pour des positions au-delà de max_position_embeddings"""
+        """Extrapoler les embeddings pour des positions au-delà de num_pos_learned
+        
+        Args:
+            position_ids: Tensor des indices de position
+        """
         device = position_ids.device
         batch_size, seq_len = position_ids.shape
         
         # Masques pour positions dans/hors de la plage d'entraînement
-        in_range_mask = position_ids < self.max_position_embeddings
+        # on utilise num_pos_learned au lieu de self.max_position_embeddings
+        in_range_mask = position_ids < self.num_pos_learned
         out_range_mask = ~in_range_mask
         
         # Initialiser le tenseur de sortie
@@ -233,7 +242,16 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         
         # Positions dans la plage : utiliser les embeddings normaux
         if in_range_mask.any():
+            # Pour les positions valides, on doit s'assurer qu'elles sont dans la plage des embeddings disponibles
+            # Si num_pos_learned < self.max_position_embeddings, on doit faire attention
             valid_positions = torch.where(in_range_mask, position_ids, 0)
+            
+            # Si certaines positions sont entre num_pos_learned et max_position_embeddings,
+            # on doit les gérer correctement
+            if self.num_pos_learned < self.max_position_embeddings:
+                # Clamp les positions pour éviter les erreurs d'index
+                valid_positions = torch.clamp(valid_positions, max=self.max_position_embeddings - 1)
+            
             normal_embeddings = self.positional_embeddings(valid_positions)
             embeddings = torch.where(in_range_mask.unsqueeze(-1), normal_embeddings, embeddings)
         
@@ -251,7 +269,9 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
                 extrapolated = self._alibi_style_extrapolation(position_ids, out_range_mask)
             else:
                 # Fallback : répéter cycliquement les embeddings
-                wrapped_positions = position_ids % self.max_position_embeddings
+                # Ici on pourrait utiliser num_pos_learned au lieu de max_position_embeddings
+                # pour le wrapping, selon ce qui est souhaité
+                wrapped_positions = position_ids % self.num_pos_learned
                 extrapolated = self.positional_embeddings(wrapped_positions)
             
             embeddings = torch.where(out_range_mask.unsqueeze(-1), extrapolated, embeddings)
@@ -370,7 +390,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             position_ids = torch.arange(seq_length, dtype=torch.long, device=embeddings.device)
             position_ids = position_ids.unsqueeze(0).expand(input_shape)
 
-        if self.extrapolation_method != 'none' and position_ids.max() >= self.max_position_embeddings:
+        if self.extrapolation_method != 'none' and position_ids.max() >= self.num_pos_learned:
             pos_emb = self.extrapolate_positions(position_ids)
         else:
             pos_emb = self.positional_embeddings(position_ids)
