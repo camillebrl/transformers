@@ -190,7 +190,8 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             self._initialized_fourier = False
 
     def _initialize_fourier_coefficients(self):
-        """Initialise les coefficients de Fourier à partir des embeddings appris"""
+        """Initialise les coefficients de Fourier à partir des embeddings appris:
+        On décompose les embeddings appris (positions 0 à num_pos_learned-1) en une somme d'ondes sinusoïdales via la transformée de Fourier"""
         if self._initialized_fourier:
             return
             
@@ -279,7 +280,9 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         return embeddings
 
     def _fourier_extrapolation(self, position_ids, mask):
-        """Reconstruction basée sur l'analyse de Fourier des embeddings appris"""
+        """Reconstruction basée sur l'analyse de Fourier des embeddings appris:
+        Cette méthode analyse les "patterns" ou "rythmes" dans les embeddings appris, puis étend ces patterns aux nouvelles positions.
+        """
         self._initialize_fourier_coefficients()
         
         # Normaliser les positions
