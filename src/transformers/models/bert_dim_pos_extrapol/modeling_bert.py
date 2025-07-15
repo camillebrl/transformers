@@ -252,7 +252,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         # Positions hors plage : appliquer l'extrapolation
         if out_range_mask.any():
             if self.extrapolation_method == 'sinusoidal':
-                extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask, valid_positions)
+                extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask)
             elif self.extrapolation_method == 'fourier':
                 extrapolated = self._fourier_extrapolation(position_ids, out_range_mask)
             
@@ -272,7 +272,8 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         
         # Ajouter un scaling factor pour matcher l'amplitude des embeddings appris
         with torch.no_grad():
-            learned_std = self.valid_positions.weight.std()
+            # Ne prendre que les num_pos_learned premiers embeddings
+            learned_std = self.positional_embeddings.weight[:self.num_pos_learned].std()
         embeddings = embeddings * learned_std
         
         return embeddings
