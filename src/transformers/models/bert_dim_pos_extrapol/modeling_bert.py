@@ -188,12 +188,6 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             self.register_buffer('fourier_coeffs', None)
             self.register_buffer('fourier_freqs', None)
             self._initialized_fourier = False
-        if self.extrapolation_method == 'learned':
-            self.position_transform = nn.Sequential(
-                nn.Linear(1, 128),
-                nn.ReLU(),
-                nn.Linear(128, self.positional_dim)
-            )
 
     def _initialize_fourier_coefficients(self):
         """Initialise les coefficients de Fourier à partir des embeddings appris"""
@@ -202,18 +196,18 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             
         with torch.no_grad():
             # Obtenir tous les embeddings positionnels appris
-            learned_embeddings = self.positional_embeddings.weight  # [max_pos, pos_dim]
+            learned_embeddings = self.positional_embeddings.weight[:self.num_pos_learned]  # [num_pos_learned, pos_dim]
             
             # Appliquer une fenêtre de Hann pour réduire les effets de bord
-            window = torch.hann_window(self.max_position_embeddings, device=learned_embeddings.device)
+            window = torch.hann_window(self.num_pos_learned, device=learned_embeddings.device)
             windowed = learned_embeddings * window.unsqueeze(1)
             
             # FFT sur chaque dimension
             fft_result = torch.fft.rfft(windowed, dim=0)
-            freqs = torch.fft.rfftfreq(self.max_position_embeddings, device=learned_embeddings.device)
+            freqs = torch.fft.rfftfreq(self.num_pos_learned, device=learned_embeddings.device)
             
             # Garder les K fréquences les plus importantes
-            K = min(64, self.max_position_embeddings // 4)
+            K = min(64, self.num_pos_learned // 4)
             magnitudes = torch.abs(fft_result)
             
             # Pour chaque dimension, garder les top K fréquences
@@ -258,7 +252,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         # Positions hors plage : appliquer l'extrapolation
         if out_range_mask.any():
             if self.extrapolation_method == 'sinusoidal':
-                extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask)
+                extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask, valid_positions)
             elif self.extrapolation_method == 'fourier':
                 extrapolated = self._fourier_extrapolation(position_ids, out_range_mask)
             
@@ -278,7 +272,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         
         # Ajouter un scaling factor pour matcher l'amplitude des embeddings appris
         with torch.no_grad():
-            learned_std = self.positional_embeddings.weight.std()
+            learned_std = self.valid_positions.weight.std()
         embeddings = embeddings * learned_std
         
         return embeddings
@@ -288,7 +282,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         self._initialize_fourier_coefficients()
         
         # Normaliser les positions
-        positions = position_ids.float() / self.max_position_embeddings
+        positions = position_ids.float() / self.num_pos_learned
         positions = positions.unsqueeze(-1)  # [batch, seq, 1]
         
         # Reconstruire avec les coefficients de Fourier
@@ -303,7 +297,7 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         imag_part = torch.sin(phase_shift) @ self.fourier_coeffs.imag  # [batch, seq, pos_dim]
         
         embeddings = real_part - imag_part
-        return embeddings * 2 / self.max_position_embeddings
+        return embeddings * 2 / self.num_pos_learned
 
     def forward(
         self,
