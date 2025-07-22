@@ -55,13 +55,13 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from .configuration_bert import BertDimPosExtrapolConfig
+from .configuration_bert import BertConfig
 
 
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
-_CONFIG_FOR_DOC = "BertDimPosExtrapolConfig"
+_CONFIG_FOR_DOC = "BertConfig"
 
 # TokenClassification docstring
 _CHECKPOINT_FOR_TOKEN_CLASSIFICATION = "dbmdz/bert-large-cased-finetuned-conll03-english"
@@ -761,7 +761,7 @@ class BertDimPosExtrapolPreTrainedModel(PreTrainedModel):
     models.
     """
 
-    config_class = BertDimPosExtrapolConfig
+    config_class = BertConfig
     load_tf_weights = load_tf_weights_in_bert
     base_model_prefix = "bert"
     supports_gradient_checkpointing = True
@@ -829,7 +829,7 @@ BERT_START_DOCSTRING = r"""
     and behavior.
 
     Parameters:
-        config ([`BertDimPosExtrapolConfig`]): Model configuration class with all the parameters of the model.
+        config ([`BertConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
             configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
 """
