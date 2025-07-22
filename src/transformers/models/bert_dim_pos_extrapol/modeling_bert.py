@@ -204,15 +204,24 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
             position_ids = torch.arange(seq_length, dtype=torch.long, device=embeddings.device)
             position_ids = position_ids.unsqueeze(0).expand(input_shape)
         batch_size, seq_len = position_ids.shape
-        k_max = max(self.max_position_embeddings - seq_len, 0) # on s'assure que k_max >=0
-        k = torch.randint(
-            low=0,
-            high=k_max + 1,
-            size=(batch_size, 1),
-            device=position_ids.device,
-            dtype=position_ids.dtype
-        )
+        max_pos_id = position_ids.max().item()
+        k_max = max(self.max_position_embeddings - max_pos_id -1, 0)
+        if k_max > 0:
+            k = torch.randint(
+                low=0,
+                high=k_max + 1,
+                size=(batch_size, 1),
+                device=position_ids.device,
+                dtype=position_ids.dtype
+            )
+        else:
+            k = torch.zeros((batch_size, 1), device=position_ids.device, dtype=position_ids.dtype)
+        
         shifted_pos_ids = position_ids + k # on ajoute k à chaque position
+        
+        # Clamp pour être sûr de rester dans les limites
+        shifted_pos_ids = torch.clamp(shifted_pos_ids, 0, self.max_position_embeddings - 1)
+        
         pos_emb = self.positional_embeddings(shifted_pos_ids)
         # Supposons que self.positional_embeddings a une dimension d'embedding égale à positional_dim 
         # (par exemple : config.hidden_size // config.num_attention_heads)
