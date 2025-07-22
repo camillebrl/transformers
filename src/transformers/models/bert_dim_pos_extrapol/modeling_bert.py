@@ -55,13 +55,13 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from .configuration_bert import BertConfig
+from .configuration_bert import BertDimPosExtrapolConfig
 
 
 logger = logging.get_logger(__name__)
 
 _CHECKPOINT_FOR_DOC = "google-bert/bert-base-uncased"
-_CONFIG_FOR_DOC = "BertConfig"
+_CONFIG_FOR_DOC = "BertDimPosExtrapolConfig"
 
 # TokenClassification docstring
 _CHECKPOINT_FOR_TOKEN_CLASSIFICATION = "dbmdz/bert-large-cased-finetuned-conll03-english"
@@ -169,7 +169,6 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.positional_dim = config.position_dimensions
-        self.max_position_embeddings = config.max_position_embeddings
         self.positional_embeddings = nn.Embedding(config.max_position_embeddings, self.positional_dim)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
         # self.register_buffer(
@@ -178,130 +177,6 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         # self.register_buffer(
         #     "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
         # )
-        self.extrapolation_method = config.extrapolation_method
-        self.num_pos_learned = config.num_pos_learned
-        # Si num_pos_learned n'est pas spécifié, utiliser max_position_embeddings
-        if self.num_pos_learned is None:
-            self.num_pos_learned = self.max_position_embeddings
-
-        if self.extrapolation_method == 'fourier':
-            self.register_buffer('fourier_coeffs', None)
-            self.register_buffer('fourier_freqs', None)
-            self._initialized_fourier = False
-
-    def _initialize_fourier_coefficients(self):
-        """Initialise les coefficients de Fourier à partir des embeddings appris:
-        On décompose les embeddings appris (positions 0 à num_pos_learned-1) en une somme d'ondes sinusoïdales via la transformée de Fourier"""
-        if self._initialized_fourier:
-            return
-            
-        with torch.no_grad():
-            # Obtenir tous les embeddings positionnels appris
-            learned_embeddings = self.positional_embeddings.weight[:self.num_pos_learned]  # [num_pos_learned, pos_dim]
-            
-            # Appliquer une fenêtre de Hann pour réduire les effets de bord
-            window = torch.hann_window(self.num_pos_learned, device=learned_embeddings.device)
-            windowed = learned_embeddings * window.unsqueeze(1)
-            
-            # FFT sur chaque dimension
-            fft_result = torch.fft.rfft(windowed, dim=0)
-            freqs = torch.fft.rfftfreq(self.num_pos_learned, device=learned_embeddings.device)
-            
-            # Garder les K fréquences les plus importantes
-            K = min(64, self.num_pos_learned // 4)
-            magnitudes = torch.abs(fft_result)
-            
-            # Pour chaque dimension, garder les top K fréquences
-            top_k_indices = torch.topk(magnitudes.mean(dim=1), K).indices
-            
-            self.fourier_coeffs = fft_result[top_k_indices]  # [K, pos_dim]
-            self.fourier_freqs = freqs[top_k_indices]  # [K]
-            self._initialized_fourier = True
-
-    def extrapolate_positions(self, position_ids):
-        """Extrapoler les embeddings pour des positions au-delà de num_pos_learned
-        
-        Args:
-            position_ids: Tensor des indices de position
-        """
-        device = position_ids.device
-        batch_size, seq_len = position_ids.shape
-        
-        # Masques pour positions dans/hors de la plage d'entraînement
-        # on utilise num_pos_learned au lieu de self.max_position_embeddings
-        in_range_mask = position_ids < self.num_pos_learned
-        out_range_mask = ~in_range_mask
-        
-        # Initialiser le tenseur de sortie
-        embeddings = torch.zeros(batch_size, seq_len, self.positional_dim, device=device)
-        
-        # Positions dans la plage : utiliser les embeddings normaux
-        if in_range_mask.any():
-            # Pour les positions valides, on doit s'assurer qu'elles sont dans la plage des embeddings disponibles
-            # Si num_pos_learned < self.max_position_embeddings, on doit faire attention
-            valid_positions = torch.where(in_range_mask, position_ids, 0)
-            
-            # Si certaines positions sont entre num_pos_learned et max_position_embeddings,
-            # on doit les gérer correctement
-            if self.num_pos_learned < self.max_position_embeddings:
-                # Clamp les positions pour éviter les erreurs d'index
-                valid_positions = torch.clamp(valid_positions, max=self.max_position_embeddings - 1)
-            
-            normal_embeddings = self.positional_embeddings(valid_positions)
-            embeddings = torch.where(in_range_mask.unsqueeze(-1), normal_embeddings, embeddings)
-        
-        # Positions hors plage : appliquer l'extrapolation
-        if out_range_mask.any():
-            if self.extrapolation_method == 'sinusoidal':
-                extrapolated = self._sinusoidal_extrapolation(position_ids, out_range_mask)
-            elif self.extrapolation_method == 'fourier':
-                extrapolated = self._fourier_extrapolation(position_ids, out_range_mask)
-            
-            embeddings = torch.where(out_range_mask.unsqueeze(-1), extrapolated, embeddings)
-        
-        return embeddings
-
-    def _sinusoidal_extrapolation(self, position_ids, mask):
-        """Extrapolation sinusoïdale inspirée des transformers originaux"""
-        position = position_ids.float().unsqueeze(-1)
-        div_term = torch.exp(torch.arange(0, self.positional_dim, 2, device=position.device) * 
-                            -(math.log(10000.0) / self.positional_dim))
-        
-        embeddings = torch.zeros(*position_ids.shape, self.positional_dim, device=position.device)
-        embeddings[..., 0::2] = torch.sin(position * div_term)
-        embeddings[..., 1::2] = torch.cos(position * div_term[:(self.positional_dim - 1) // 2 + 1])
-        
-        # Ajouter un scaling factor pour matcher l'amplitude des embeddings appris
-        with torch.no_grad():
-            # Ne prendre que les num_pos_learned premiers embeddings
-            learned_std = self.positional_embeddings.weight[:self.num_pos_learned].std()
-        embeddings = embeddings * learned_std
-        
-        return embeddings
-
-    def _fourier_extrapolation(self, position_ids, mask):
-        """Reconstruction basée sur l'analyse de Fourier des embeddings appris:
-        Cette méthode analyse les "patterns" ou "rythmes" dans les embeddings appris, puis étend ces patterns aux nouvelles positions.
-        """
-        self._initialize_fourier_coefficients()
-        
-        # Normaliser les positions
-        positions = position_ids.float() / self.num_pos_learned
-        positions = positions.unsqueeze(-1)  # [batch, seq, 1]
-        
-        # Reconstruire avec les coefficients de Fourier
-        freqs = self.fourier_freqs.unsqueeze(0).unsqueeze(0)  # [1, 1, K]
-        phase_shift = 2 * math.pi * positions * freqs  # [batch, seq, K]
-        
-        # Partie réelle et imaginaire
-        # self.fourier_coeffs a la forme [K, pos_dim]
-        # phase_shift a la forme [batch, seq, K]
-        # On veut obtenir [batch, seq, pos_dim]
-        real_part = torch.cos(phase_shift) @ self.fourier_coeffs.real  # [batch, seq, pos_dim]
-        imag_part = torch.sin(phase_shift) @ self.fourier_coeffs.imag  # [batch, seq, pos_dim]
-        
-        embeddings = real_part - imag_part
-        return embeddings * 2 / self.num_pos_learned
 
     def forward(
         self,
@@ -327,17 +202,22 @@ class BertDimPosExtrapolEmbeddings(nn.Module):
         if position_ids is None:
             position_ids = torch.arange(seq_length, dtype=torch.long, device=embeddings.device)
             position_ids = position_ids.unsqueeze(0).expand(input_shape)
-
-        if self.extrapolation_method != 'none' and position_ids.max() >= self.num_pos_learned:
-            pos_emb = self.extrapolate_positions(position_ids)
-        else:
-            pos_emb = self.positional_embeddings(position_ids)
-
+        batch_size, seq_len = position_ids.shape
+        k_max = max(self.max_position_embeddings - seq_len, 0) # on s'assure que k_max >=0
+        k = torch.randint(
+            low=0,
+            high=k_max + 1,
+            size=(batch_size, 1),
+            device=position_ids.device,
+            dtype=position_ids.dtype
+        )
+        shifted_pos_ids = position_ids + k # on ajoute k à chaque position
+        pos_emb = self.positional_embeddings(shifted_pos_ids)
         # Supposons que self.positional_embeddings a une dimension d'embedding égale à positional_dim 
         # (par exemple : config.hidden_size // config.num_attention_heads)
 
         # Injection : on remplace les premières positional_dim dimensions par pos_emb
-        embeddings[..., :self.positional_dim] = pos_emb
+        embeddings[..., :pos_emb.size(-1)] = pos_emb
 
         # Ensuite, on applique la normalisation et le dropout comme d'habitude
         embeddings = self.LayerNorm(embeddings)
@@ -881,7 +761,7 @@ class BertDimPosExtrapolPreTrainedModel(PreTrainedModel):
     models.
     """
 
-    config_class = BertConfig
+    config_class = BertDimPosExtrapolConfig
     load_tf_weights = load_tf_weights_in_bert
     base_model_prefix = "bert"
     supports_gradient_checkpointing = True
@@ -949,7 +829,7 @@ BERT_START_DOCSTRING = r"""
     and behavior.
 
     Parameters:
-        config ([`BertConfig`]): Model configuration class with all the parameters of the model.
+        config ([`BertDimPosExtrapolConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
             configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
 """
