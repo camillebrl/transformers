@@ -296,13 +296,26 @@ class BertDimPosSelfAttention(nn.Module):
             v_pos # [batch, num_attention_heads, seq_len, position_head_dim]
         ) # [batch, num_attention_heads, seq_len, position_head_dim]
         
-        # Concaténation des résultats
-        context_layer = torch.cat([pos_context, sem_context], dim=-1) # [batch, num_heads, seq_len, position_head_dim + semantic_head_dim = attention_head_size]
+        # Permute pour mettre seq_len en dimension 1
+        pos_context = pos_context.permute(0, 2, 1, 3).contiguous() # [batch, seq_len, num_heads, position_head_dim]
+        
+        sem_context = sem_context.permute(0, 2, 1, 3).contiguous() # [batch, seq_len, num_heads, semantic_head_dim]
 
-        # Reshape final: concaténation sur toutes les têtes pour avoir le Multi-Head Attention (code Bert d'origine)
-        context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
-        new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
-        context_layer = context_layer.view(new_context_layer_shape)
+        # Reshape pour concaténer toutes les têtes
+        batch_size, seq_len = pos_context.shape[:2]
+        pos_context = pos_context.view(batch_size, seq_len, -1) # [batch, seq_len, num_heads * position_head_dim]
+        sem_context = sem_context.view(batch_size, seq_len, -1) # [batch, seq_len, num_heads * semantic_head_dim]
+
+        # Maintenant on concatène pos et sem pour obtenir [all_pos || all_sem] cad on a [pos₀||...||posₕ||sem₀||...||semₕ]
+        context_layer = torch.cat([pos_context, sem_context], dim=-1)  # [batch, seq_len, (num_heads * position_head_dim) + (num_heads * semantic_head_dim)]
+
+        # # Concaténation des résultats
+        # context_layer = torch.cat([pos_context, sem_context], dim=-1) # [batch, num_heads, seq_len, position_head_dim + semantic_head_dim = attention_head_size]
+
+        # # Reshape final: concaténation sur toutes les têtes pour avoir le Multi-Head Attention (code Bert d'origine)
+        # context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
+        # new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
+        # context_layer = context_layer.view(new_context_layer_shape)
 
         outputs = (context_layer, attention_probs, attention_scores) if output_attentions else (context_layer,)
         return outputs
