@@ -33,8 +33,11 @@ if TYPE_CHECKING:
     from .bartpho import *
     from .beit import *
     from .bert import *
+    from .bert_dim_pos import *
+    from .posbert import *
     from .bert_generation import *
     from .bert_japanese import *
+    from .bert_no_pos import *
     from .bertweet import *
     from .big_bird import *
     from .bigbird_pegasus import *
