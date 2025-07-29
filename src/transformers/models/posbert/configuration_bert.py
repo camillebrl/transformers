@@ -100,6 +100,7 @@ class PosBertConfig(PretrainedConfig):
         self,
         vocab_size=30522,
         hidden_size=768,
+        pos_size=384,
         num_hidden_layers=12,
         num_attention_heads=12,
         intermediate_size=3072,
@@ -111,6 +112,7 @@ class PosBertConfig(PretrainedConfig):
         initializer_range=0.02,
         layer_norm_eps=1e-12,
         pad_token_id=0,
+        fully_indep_sem_pos = False,
         position_embedding_type="absolute",
         use_cache=True,
         classifier_dropout=None,
@@ -120,6 +122,7 @@ class PosBertConfig(PretrainedConfig):
 
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
+        self.pos_size = pos_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
         self.hidden_act = hidden_act
@@ -133,6 +136,7 @@ class PosBertConfig(PretrainedConfig):
         self.position_embedding_type = position_embedding_type
         self.use_cache = use_cache
         self.classifier_dropout = classifier_dropout
+        self.fully_indep_sem_pos= fully_indep_sem_pos
 
 
 class BertOnnxConfig(OnnxConfig):

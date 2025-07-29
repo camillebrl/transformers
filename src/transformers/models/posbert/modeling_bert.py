@@ -155,28 +155,55 @@ def load_tf_weights_in_bert(model, config, tf_checkpoint_path):
         pointer.data = torch.from_numpy(array)
     return model
 
+class SemBertEmbeddings(nn.Module):
+    """Construct the embeddings from word, position and token_type embeddings."""
+
+    def __init__(self, config):
+        super().__init__()
+        print("initializing SemBertEmbeddings")
+        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
+
+        # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
+        # any TensorFlow checkpoint file
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+    ) -> torch.Tensor:
+        print("forward SemBertEmbeddings")
+        if inputs_embeds is None:
+            inputs_embeds = self.word_embeddings(input_ids)
+
+        embeddings = inputs_embeds
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings
+    
 
 class PosBertEmbeddings(nn.Module):
     """Construct the embeddings from word, position and token_type embeddings."""
 
     def __init__(self, config):
         super().__init__()
-        self.positional_dim = config.position_dimensions
-        self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size-self.positional_dim, padding_idx=config.pad_token_id)
-        # self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        # self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.hidden_size)
+        print("initializing PosBertEmbeddings")
+        self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.pos_size)
+        self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.pos_size)
+
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
         # any TensorFlow checkpoint file
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(config.pos_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.positional_embeddings = nn.Embedding(config.max_position_embeddings, self.positional_dim)
         # position_ids (1, len position emb) is contiguous in memory and exported when serialized
-        # self.register_buffer(
-        #     "position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)), persistent=False
-        # )
-        # self.register_buffer(
-        #     "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
-        # )
+        self.position_embedding_type = getattr(config, "position_embedding_type", "absolute")
+        self.register_buffer(
+            "position_ids", torch.arange(config.max_position_embeddings).expand((1, -1)), persistent=False
+        )
+        self.register_buffer(
+            "token_type_ids", torch.zeros(self.position_ids.size(), dtype=torch.long), persistent=False
+        )
 
     def forward(
         self,
@@ -184,8 +211,9 @@ class PosBertEmbeddings(nn.Module):
         token_type_ids: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
-        ) -> torch.Tensor:
-        
+        past_key_values_length: int = 0,
+    ) -> torch.Tensor:
+        print("forward PosBertEmbeddings")
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -193,68 +221,85 @@ class PosBertEmbeddings(nn.Module):
 
         seq_length = input_shape[1]
 
-        if inputs_embeds is None:
-            inputs_embeds = self.word_embeddings(input_ids)
-        
-        print("inputs id shape", input_shape)
-        print("semantic embedding shape", inputs_embeds.shape)
-
-        # token_type_embeddings = self.token_type_embeddings(token_type_ids)
-        # embeddings = inputs_embeds + token_type_embeddings
-
-        embeddings = inputs_embeds # [batch_size, seq_length, semantic_dic]
-
-        # Calcul de pos_emb :
-        # On crée les position_ids si non fournis
         if position_ids is None:
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=embeddings.device)
-            position_ids = position_ids.unsqueeze(0) #[1, seq_length]
+            position_ids = self.position_ids[:, past_key_values_length : seq_length + past_key_values_length]
 
-        pos_emb = self.positional_embeddings(position_ids).expand((input_shape[0], input_shape[1], self.positional_dim)) # [1, seq_length, positional_dim] to [batch_size, seqlength, positional_dim]
+        # Setting the token_type_ids to the registered buffer in constructor where it is all zeros, which usually occurs
+        # when its auto-generated, registered buffer helps users when tracing the model without passing token_type_ids, solves
+        # issue #5664
+        if token_type_ids is None:
+            if hasattr(self, "token_type_ids"):
+                buffered_token_type_ids = self.token_type_ids[:, :seq_length]
+                buffered_token_type_ids_expanded = buffered_token_type_ids.expand(input_shape[0], seq_length)
+                token_type_ids = buffered_token_type_ids_expanded
+            else:
+                token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=self.position_ids.device)
 
-        print("pos_emb shape", pos_emb.shape)
-        # Supposons que self.positional_embeddings a une dimension d'embedding égale à positional_dim 
-        # (par exemple : config.hidden_size // config.num_attention_heads)
+        token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
-        # Injection : on remplace les premières positional_dim dimensions par pos_emb
-        # embeddings[..., :pos_emb.size(-1)] = pos_emb
-        embeddings = torch.cat((pos_emb, embeddings), dim=2) 
+        embeddings = token_type_embeddings
+        position_embeddings = self.position_embeddings(position_ids)
 
-        print("final embedding shape", embeddings.shape)
-
-        # Ensuite, on applique la normalisation et le dropout comme d'habitude
+        embeddings = token_type_embeddings + position_embeddings
         embeddings = self.LayerNorm(embeddings)
         embeddings = self.dropout(embeddings)
-
         return embeddings
 
 
 class PosBertSelfAttention(nn.Module):
-    def __init__(self, config, layer_idx):
+    def __init__(self, config, position_embedding_type=None, layer_idx=None):
         super().__init__()
+        print("initializing PosBertSelfAttention")
+        if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
+            raise ValueError(
+                f"The hidden size ({config.hidden_size}) is not a multiple of the number of attention "
+                f"heads ({config.num_attention_heads})"
+            )
+
+        if config.pos_size % config.num_attention_heads != 0:
+            raise ValueError(
+                f"The pos size ({config.pos_size}) is not a multiple of the number of attention "
+                f"heads ({config.num_attention_heads})"
+            )
+
         self.config = config
         self.layer_idx = layer_idx
         self.num_attention_heads = config.num_attention_heads
-        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        self.attention_head_size = int((config.hidden_size + config.pos_size) / config.num_attention_heads)
+        self.sem_attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        self.pos_attention_head_size = int(config.pos_size / config.num_attention_heads)
+
         self.all_head_size = self.num_attention_heads * self.attention_head_size
-        self.positional_dim = config.position_dimensions
-        self.semantic_dim = config.hidden_size - self.positional_dim
+        self.sem_all_head_size = self.num_attention_heads * self.sem_attention_head_size
+        self.pos_all_head_size = self.num_attention_heads * self.pos_attention_head_size
+       
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        # NOT COMPLETELY SURE THIS WORKS AS EXPECTED
-        self.position_head_dim = int(self.attention_head_size * (self.positional_dim / config.hidden_size))
-        self.semantic_head_dim = self.attention_head_size - self.position_head_dim
+        if config.fully_indep_sem_pos : 
+            # Queries and keys separated
+            self.sem_query = nn.Linear(config.hidden_size, self.sem_all_head_size)
+            self.pos_query = nn.Linear(config.pos_size, self.pos_all_head_size)
 
-        self.query_pos = nn.Linear(self.positional_dim, self.position_head_dim * self.num_attention_heads) 
-        self.query_sem = nn.Linear(self.semantic_dim, self.semantic_head_dim * self.num_attention_heads) 
-        # self.query = nn.Linear(config.hidden_size, self.all_head_size)
+            self.sem_key = nn.Linear(config.hidden_size, self.sem_all_head_size)
+            self.pos_key = nn.Linear(config.pos_size, self.pos_all_head_size)
+        
+        else :
+            self.query = nn.Linear(config.pos_size + config.hidden_size, self.all_head_size)
+            self.key = nn.Linear(config.pos_size + config.hidden_size, self.all_head_size)
 
-        self.key_pos = nn.Linear(self.positional_dim, self.position_head_dim * self.num_attention_heads) 
-        self.key_sem = nn.Linear(self.semantic_dim, self.semantic_head_dim * self.num_attention_heads) 
-        # self.key = nn.Linear(config.hidden_size, self.all_head_size)
+        # Value is separated (position / semantic)
+        self.sem_value = nn.Linear(config.hidden_size, self.sem_all_head_size)
+        self.pos_value = nn.Linear(config.pos_size, self.pos_all_head_size)
 
-        self.value_pos = nn.Linear(self.positional_dim, self.num_attention_heads * self.position_head_dim) 
-        self.value_sem = nn.Linear(self.semantic_dim, self.num_attention_heads * self.semantic_head_dim)
+        self.position_embedding_type = position_embedding_type or getattr(
+            config, "position_embedding_type", "absolute"
+        )
+        if self.position_embedding_type == "relative_key" or self.position_embedding_type == "relative_key_query":
+            self.max_position_embeddings = config.max_position_embeddings
+            self.distance_embedding = nn.Embedding(2 * config.max_position_embeddings - 1, self.attention_head_size)
+
+        self.is_decoder = config.is_decoder
+
     
     def transpose_for_scores(self, x: torch.Tensor, type_emb: Optional[str] = None) -> torch.Tensor:
         """
@@ -264,18 +309,21 @@ class PosBertSelfAttention(nn.Module):
             x: tenseur de taille [batch_size, num_heads, seq_len, head_size]
         """
         if type_emb == "pos" :
-            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.position_head_dim)
+            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.pos_attention_head_size)
         elif type_emb == "sem" :
-            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.semantic_head_dim)
-        else :
+            new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.sem_attention_head_size)
+        elif type_emb == "all":
             new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
-
+        else :
+            raise ValueError (f"{type_emb} is not a valid type of embedding")
+        
         x = x.view(new_x_shape)
         return x.permute(0, 2, 1, 3)
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        pos_hidden_states: torch.Tensor,
+        sem_hidden_states: torch.Tensor,
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -283,104 +331,107 @@ class PosBertSelfAttention(nn.Module):
         past_key_value=None,
         output_attentions=False,
     ):
-        batch_size, seq_length, _ = hidden_states.size()
+        batch_size, seq_length, _ = pos_hidden_states.size()
 
-        print("uhhhh", self.attention_head_size, self.positional_dim, self.config.hidden_size)
-        print("positional head dim", self.position_head_dim)
-        print("semantic head dim", self.semantic_head_dim)
-        print("shape of hidden states", hidden_states.shape)
+        print("hidden_size", self.config.hidden_size)
+        print("positional head dim", pos_hidden_states.shape)
+        print("semantic head dim", sem_hidden_states.shape)
         # Séparation des parties positionnelle et sémantique
-        p = hidden_states[:, :, :self.positional_dim]  # [batch, seq_len, positional_dim]
-        s = hidden_states[:, :, self.positional_dim:]  # [batch, seq_len, semantic_dim]
+        # p = hidden_states[:, :, :self.positional_dim]  # [batch, seq_len, positional_dim]
+        # s = hidden_states[:, :, self.positional_dim:]  # [batch, seq_len, semantic_dim]
 
 
-        print("shape of p", p.shape)
-        print("shape of s", s.shape)
-        query_pos_layer = self.query_pos(p)
-        query_sem_layer = self.query_sem(s)
+        if self.config.fully_indep_sem_pos : 
+            print("compute Q")
+            query_pos_layer = self.pos_query(pos_hidden_states)
+            query_sem_layer = self.sem_query(sem_hidden_states)
 
-        key_pos_layer = self.key_pos(p)
-        key_sem_layer = self.key_sem(s)
+            print("compute K")
+            key_pos_layer = self.pos_key(pos_hidden_states)
+            key_sem_layer = self.sem_key(sem_hidden_states)
+
+        else :
+            hidden_states = torch.concat([pos_hidden_states, sem_hidden_states], dim=-1)
+            print("compute full")
+            query_layer = self.query(hidden_states)
+            key_layer = self.query(hidden_states)
+            print(query_layer.shape, key_layer.shape)
+            
+        print("computy V")
+        value_pos_layer = self.pos_value(pos_hidden_states)
+        value_sem_layer = self.sem_value(sem_hidden_states)
+
 
         # mixed_query_layer = self.query(hidden_states)
         # mixed_key_layer = self.key(hidden_states)
         
-        print("query pos layer shape", query_pos_layer.shape)
-        # POSITIONAL ATTENTION
-        pos_query_layer = self.transpose_for_scores(query_pos_layer, "pos") # [batchsize, num_head, seqlength, pos_head_dim]
-        pos_key_layer = self.transpose_for_scores(key_pos_layer, "pos")
-        print("shape of qp after transform", pos_query_layer.shape)
-        print("shape of kp after transform", pos_key_layer.shape)
 
-        pos_attention_scores = torch.matmul(pos_query_layer, pos_key_layer.transpose(-1, -2))
-        pos_attention_scores = pos_attention_scores / math.sqrt(self.attention_head_size)
-        if attention_mask is not None:
-            pos_attention_scores = pos_attention_scores + attention_mask
-        pos_attention_probs = nn.functional.softmax(pos_attention_scores, dim=-1)
-        pos_attention_probs = self.dropout(pos_attention_probs) # [batch, num_heads, seq_len, seq_len]
-        print("pos attention probs size", pos_attention_probs.shape)
 
-        value_pos = self.value_pos(p)  # [batch, seq_len, num_attention_heads*positional_head_dim]
-        value_pos = value_pos.view(batch_size, seq_length, self.num_attention_heads, self.position_head_dim)
-        value_pos = value_pos.permute(0, 2, 1, 3)  # [batch, num_attention_heads, seq_len, positional_head_dim]
-        print("value_pos shape", value_pos.shape)
-        
-        pos_context = torch.matmul(
-            pos_attention_probs, # [batch, num_attention_heads, seq_len, seq_len]
-            value_pos # [batch, num_attention_heads, seq_len, pos_head_dim]
-        ) # [batch, num_attention_heads, seq_len, pos_head_dim]
-
-        print("pos_context shape", pos_context.shape)
-        pos_context = pos_context.permute(0, 2, 1, 3).contiguous() # [batch, seqlength, num_head, position_head_dim]
-        new_pos_context_shape = pos_context.size()[:-2] + (self.position_head_dim * self.num_attention_heads,)
-        print("new_pos_context_shape", new_pos_context_shape)
-        pos_context = pos_context.view(new_pos_context_shape)
-        print("pos_context shape after transformation", pos_context.shape)
-
-        # SEMANTIC ATTENTION
-
-        sem_query_layer = self.transpose_for_scores(query_sem_layer, "sem") # [batchsize, num_head, seqlength, sem_head_dim]
-        sem_key_layer = self.transpose_for_scores(key_sem_layer, "sem")
-        print("shape of qs after transform", sem_query_layer.shape)
-        print("shape of ks after transform", sem_key_layer.shape)
-
-        sem_attention_scores = torch.matmul(sem_query_layer, sem_key_layer.transpose(-1, -2))
-        sem_attention_scores = sem_attention_scores / math.sqrt(self.attention_head_size)
-        if attention_mask is not None:
-            sem_attention_scores = sem_attention_scores + attention_mask
-        sem_attention_probs = nn.functional.softmax(sem_attention_scores, dim=-1)
-        sem_attention_probs = self.dropout(sem_attention_probs) # [batch, num_heads, seq_len, seq_len]
-        
-        
-        value_sem = self.value_sem(s)  # [batch, seq_len, num_attention_heads*semantic_head_dim]
-        value_sem = value_sem.view(batch_size, seq_length, self.num_attention_heads, self.semantic_head_dim)
-        value_sem = value_sem.permute(0, 2, 1, 3)  # [batch, num_attention_heads, seq_len, semantic_head_dim]
+        def compute_attention_probs_and_context(query, key, value, attention_mask, qk_type_emb = "pos", v_type_emb = None) :
             
-        sem_context = torch.matmul(
-            sem_attention_probs, # [batch, num_attention_heads, seq_len, seq_len]
-            value_sem # [batch, num_attention_heads, seq_len, semantic_head_dim]
-        ) # [batch, num_attention_heads, seq_len, semantic_head_dim]
+            if v_type_emb is None :
+                v_type_emb=qk_type_emb
+            
+            v_head_size = self.pos_attention_head_size if v_type_emb=="pos" else self.sem_attention_head_size 
 
-        print("sem_context shape", sem_context.shape)
-        sem_context = sem_context.permute(0, 2, 1, 3).contiguous() # [batch, seqlength, num_head, semantic_head_dim]
-        new_sem_context_shape = sem_context.size()[:-2] + (self.semantic_head_dim * self.num_attention_heads,)
-        sem_context = sem_context.view(new_sem_context_shape)
-        print("sem_context shape after transformation", sem_context.shape)
+            query_Tr = self.transpose_for_scores(query, qk_type_emb) # [batchsize, num_head, seq_len, head_dim]
+            key_Tr = self.transpose_for_scores(key, qk_type_emb)
+            value_Tr = value.view(batch_size, seq_length, self.num_attention_heads, v_head_size)
+            value_Tr = value_Tr.permute(0, 2, 1, 3)  # [batch, num_heads, seq_len, head_dim]
 
+            attention_scores = torch.matmul(query_Tr, key_Tr.transpose(-1, -2))
+            attention_scores = attention_scores / math.sqrt(v_head_size)
+
+            if attention_mask is not None:
+                attention_scores = attention_scores + attention_mask
+            attention_probs = nn.functional.softmax(attention_scores, dim=-1)
+            attention_probs = self.dropout(attention_probs)
+
+            context = torch.matmul(
+                attention_probs, # [batch, num_attention_heads, seq_len, seq_len]
+                value_Tr # [batch, num_attention_heads, seq_len, head_dim]
+            )
+
+            context = context.permute(0, 2, 1, 3).contiguous() # [batch, seqlength, num_head, head_dim]
+            new_context_shape = context.size()[:-2] + (v_head_size * self.num_attention_heads,)
+            context = context.view(new_context_shape)
+
+            return attention_probs, context
+
+        if self.config.fully_indep_sem_pos : 
+            # POSITIONAL ATTENTION
+            print("computing pos context")
+            pos_attention_probs, pos_context = compute_attention_probs_and_context(query_pos_layer, key_pos_layer, value_pos_layer, attention_mask, "pos")
+
+
+            # SEMANTIC ATTENTION
+            print("computing sem context")
+            sem_attention_probs, sem_context = compute_attention_probs_and_context(query_sem_layer, key_sem_layer, value_sem_layer, attention_mask, "sem")
+        
+        else :
+            # POSITIONAL ATTENTION
+            print("computing mixed pos context")
+            pos_attention_probs, pos_context = compute_attention_probs_and_context(query_layer, key_layer, value_pos_layer, attention_mask, "all", "pos")
+
+            # SEMANTIC ATTENTION
+            print("computing mixed sem context")
+            sem_attention_probs, sem_context = compute_attention_probs_and_context(query_layer, key_layer, value_sem_layer, attention_mask, "all", "sem")
        
         # Concaténation des résultats
-        context_layer = torch.cat([pos_context, sem_context], dim=-1) # [batch, num_heads, seq_len, position_head_dim + semantic_head_dim = attention_head_size]
+        # context_layer = torch.cat([pos_context, sem_context], dim=-1) # [batch, num_heads, seq_len, position_head_dim + semantic_head_dim = attention_head_size]
 
-        outputs = (context_layer, pos_attention_probs, pos_attention_scores) if output_attentions else (context_layer,)
-        return outputs
+        # outputs = (context_layer, pos_attention_probs, pos_attention_scores) if output_attentions else (context_layer,)
+        return (pos_context, sem_context, pos_attention_probs, sem_attention_probs)
 
 
 
 class PosBertAttention(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
+        print("initializing PosBertAttention")
         self.self = PosBertSelfAttention(config, layer_idx)
-        self.output = PosBertSelfOutput(config)
+        self.pos_output = PosBertSelfOutput(config)
+        self.sem_output = SemBertSelfOutput(config)
         self.num_attention_heads = config.num_attention_heads
         self.pruned_heads = set()
         self.layer_idx = layer_idx
@@ -405,15 +456,17 @@ class PosBertAttention(nn.Module):
 
     def forward(
         self, 
-        hidden_states,
+        pos_hidden_states,
+        sem_hidden_states,
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None, 
         output_attentions=False
     ): 
-        self_outputs = self.self(
-            hidden_states,
+        pos_context, sem_context, pos_attention_probs, sem_attention_probs = self.self(
+            pos_hidden_states,
+            sem_hidden_states,
             attention_mask,
             head_mask,
             encoder_hidden_states,
@@ -427,91 +480,146 @@ class PosBertAttention(nn.Module):
         #     f"does not match hidden_states shape {hidden_states.shape}"
         # )
 
-        attention_output = self.output(self_outputs[0], hidden_states)
+        print("out of self attention")
+        print("pos context shape", pos_context.shape)
+        print("sem context shape", sem_context.shape)
+        pos_attention_output = self.pos_output(pos_context, pos_hidden_states)
+        sem_attention_output = self.sem_output(sem_context, sem_hidden_states)
+        
 
         # Vérification de la sortie finale
-        assert attention_output.shape == hidden_states.shape, (
-            f"Mismatch in shapes: attention_output shape {attention_output.shape} "
-            f"does not match hidden_states shape {hidden_states.shape}"
+        assert pos_attention_output.shape == pos_hidden_states.shape, (
+            f"Mismatch in shapes: attention_output shape {pos_attention_output.shape} "
+            f"does not match hidden_states shape {pos_hidden_states.shape}"
         )
 
-        outputs = (attention_output,) + self_outputs[1:]  # add attentions if we output them (# Les attentions includent maintenant les scores bruts)
+        assert sem_attention_output.shape == sem_hidden_states.shape, (
+            f"Mismatch in shapes: attention_output shape {sem_attention_output.shape} "
+            f"does not match hidden_states shape {sem_hidden_states.shape}"
+        )
+
+        outputs = (pos_attention_output, sem_attention_output, pos_attention_probs, sem_attention_probs)  # add attentions if we output them (# Les attentions includent maintenant les scores bruts)
         return outputs
 
 class PosBertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
+        print("initializing PosBertSOutput")
         # Dimensions de l'espace d'origine
-        self.hidden_size = config.hidden_size
         # Dimension positionnelle = d_head
-        self.pos_dim = config.position_dimensions
-        # Dimension sémantique = hidden_size - pos_dim
-        self.sem_dim = config.hidden_size - self.pos_dim
+        self.pos_dim = config.pos_size
         
         # L'espace intermédiaire est supposé être de dimension 4 * hidden_size.
         # On le divise en deux branches :
         #   branche positionnelle de dimension 4 * pos_dim
         #   branche sémantique de dimension 4 * sem_dim
         self.intermediate_pos_dim = 4 * self.pos_dim
-        self.intermediate_sem_dim = 4 * self.sem_dim
         # Vérification implicite : self.intermediate_pos_dim + self.intermediate_sem_dim == config.intermediate_size
         
         # Deux projections linéaires distinctes sur chaque branche
-        self.dense_pos = nn.Linear(self.intermediate_pos_dim, self.pos_dim)
-        self.dense_sem = nn.Linear(self.intermediate_sem_dim, self.sem_dim)
+        self.dense = nn.Linear(self.intermediate_pos_dim, self.pos_dim)
         
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(self.pos_dim, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         # hidden_states est de dimension [batch, seq_len, intermediate_size] avec
         # intermediate_size = 4 * hidden_size = 4 * pos_dim + 4 * sem_dim
         # Séparation en deux branches le long de la dernière dimension :
-        pos_input = hidden_states[..., :self.intermediate_pos_dim]    # [batch, seq_len, 4 * pos_dim]
-        sem_input = hidden_states[..., self.intermediate_pos_dim:]    # [batch, seq_len, 4 * sem_dim]
-        
+
         # Application des projections linéaires distinctes
-        pos_out = self.dense_pos(pos_input)  # [batch, seq_len, pos_dim]
-        sem_out = self.dense_sem(sem_input)  # [batch, seq_len, sem_dim]
+        pos_out = self.dense(hidden_states)  # [batch, seq_len, pos_dim]
         
         # Concaténation des deux branches pour obtenir un vecteur de dimension hidden_size
-        projected = torch.cat([pos_out, sem_out], dim=-1)  # [batch, seq_len, hidden_size]
-        projected = self.dropout(projected)
-        output = self.LayerNorm(projected + input_tensor)
+        pos_out = self.dropout(pos_out)
+        output = self.LayerNorm(pos_out + input_tensor)
+        return output
+    
+class SemBertOutput(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        print("initializing SemBertSOutput")
+        # Dimensions de l'espace d'origine
+        # Dimension positionnelle = d_head
+        self.sem_dim = config.hidden_size
+        
+        # L'espace intermédiaire est supposé être de dimension 4 * hidden_size.
+        # On le divise en deux branches :
+        #   branche positionnelle de dimension 4 * sem_dim
+        #   branche sémantique de dimension 4 * sem_dim
+        self.intermediate_sem_dim = 4 * self.sem_dim
+        # Vérification implicite : self.intermediate_sem_dim + self.intermediate_sem_dim == config.intermediate_size
+        
+        # Deux projections linéaires distinctes sur chaque branche
+        self.dense = nn.Linear(self.intermediate_sem_dim, self.sem_dim)
+        
+        self.LayerNorm = nn.LayerNorm(self.sem_dim, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
+        # hidden_states est de dimension [batch, seq_len, intermediate_size] avec
+        # intermediate_size = 4 * hidden_size = 4 * pos_dim + 4 * sem_dim
+        # Séparation en deux branches le long de la dernière dimension :
+
+        # Application des projections linéaires distinctes
+        sem_out = self.dense(hidden_states)  # [batch, seq_len, sem_dim]
+        
+        # Concaténation des deux branches pour obtenir un vecteur de dimension hidden_size
+        sem_out = self.dropout(sem_out)
+        output = self.LayerNorm(sem_out + input_tensor)
         return output
 
 
-class PosBertSelfOutput(nn.Module):
+class SemBertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
+        print("initializing SemBertSelfOutput")
         # Détermination des dimensions pour la branche positionnelle et sémantique
-        self.pos_dim = config.position_dimensions
-        self.sem_dim = config.hidden_size - self.pos_dim
+        self.sem_dim = config.hidden_size
 
         # Projections linéaires distinctes pour chaque branche :
-        # On projette de pos_dim à pos_dim et de sem_dim à sem_dim
-        self.dense_pos = nn.Linear(self.pos_dim, self.pos_dim)
-        self.dense_sem = nn.Linear(self.sem_dim, self.sem_dim)
+        # On projette de sem_dim à sem_dim et de sem_dim à sem_dim
+        self.dense = nn.Linear(self.sem_dim, self.sem_dim)
 
         self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
-    def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
-        # On sépare hidden_states en deux branches selon les dimensions positionnelles et sémantiques
-        pos_input = hidden_states[..., :self.pos_dim]   # [batch, seq_len, pos_dim]
-        sem_input = hidden_states[..., self.pos_dim:]     # [batch, seq_len, sem_dim]
-
+    def forward(self, sem_hidden_states: torch.Tensor, sem_input_tensor: torch.Tensor) -> torch.Tensor:
+        print("in sembertselfoutput forward")
         # Application des projections linéaires sur chacune des branches
-        pos_output = self.dense_pos(pos_input)            # [batch, seq_len, pos_dim]
-        sem_output = self.dense_sem(sem_input)            # [batch, seq_len, sem_dim]
+        sem_output = self.dense(sem_hidden_states)            # [batch, seq_len, pos_dim]
 
         # Reconstruction de la sortie en concaténant les deux branches
-        hidden_states = torch.cat([pos_output, sem_output], dim=-1)
-
-        hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        return hidden_states
+        sem_output = self.dropout(sem_output)
+        sem_output = self.LayerNorm(sem_output + sem_input_tensor)
+        return sem_output
     
+class PosBertSelfOutput(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        # Détermination des dimensions pour la branche positionnelle et sémantique
+        print("initializing PosBertSelfOutput")
+        self.pos_dim = config.pos_size
+
+        # Projections linéaires distinctes pour chaque branche :
+        # On projette de pos_dim à pos_dim et de sem_dim à sem_dim
+        self.dense = nn.Linear(self.pos_dim, self.pos_dim)
+
+        self.LayerNorm = nn.LayerNorm(config.pos_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+    def forward(self, pos_hidden_states: torch.Tensor, pos_input_tensor: torch.Tensor) -> torch.Tensor:
+        print("in posbertselfoutput forward")
+        # Application des projections linéaires sur chacune des branches
+        pos_output = self.dense(pos_hidden_states)            # [batch, seq_len, pos_dim]
+        print("pos_output", pos_output.shape)
+        print("pos_input_tensor", pos_input_tensor.shape)
+        # Reconstruction de la sortie en concaténant les deux branches
+        pos_output = self.dropout(pos_output)
+        pos_output = self.LayerNorm(pos_output + pos_input_tensor)
+        return pos_output
+    
+
 
 class PosBertIntermediate(nn.Module):
     def __init__(self, config):
@@ -519,19 +627,54 @@ class PosBertIntermediate(nn.Module):
         # On décompose l'espace d'entrée (hidden_size) en deux parties :
         # - d_pos est défini comme d_head = hidden_size // num_attention_heads
         # - d_sem est le complément : hidden_size - d_pos
-        self.pos_dim = config.position_dimensions
-        self.sem_dim = config.hidden_size - self.pos_dim
+        print("initializing PosBertIntermediate")
+        self.pos_dim = config.pos_size
 
         # On veut projeter dans un espace intermédiaire de dimension 4 * hidden_size.
         # On répartit cet espace en deux branches :
         # - branche positionnelle de dimension 4 * pos_dim
         # - branche sémantique de dimension 4 * sem_dim
         self.pos_intermediate_dim = 4 * self.pos_dim
+
+        # Les couches de projection sont appliquées sur les parties correspondantes de l'entrée.
+        self.dense = nn.Linear(self.pos_dim, self.pos_intermediate_dim)
+        print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim)
+
+        if isinstance(config.hidden_act, str):
+            self.intermediate_act_fn = ACT2FN[config.hidden_act]
+        else:
+            self.intermediate_act_fn = config.hidden_act
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        
+        # Application des projections linéaires sur chaque branche
+        print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim, hidden_states.shape)
+        pos_out = self.dense(hidden_states)   # [batch, seq_len, 4 * pos_dim]
+
+        # Application de l'activation sur chaque branche
+        pos_out = self.intermediate_act_fn(pos_out)
+
+        # Regroupement par concaténation le long de la dernière dimension :
+        # La sortie finale aura une dimension de 4 * (pos_dim + sem_dim) = 4 * hidden_size
+        return pos_out
+        
+class SemBertIntermediate(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        # On décompose l'espace d'entrée (hidden_size) en deux parties :
+        # - d_pos est défini comme d_head = hidden_size // num_attention_heads
+        # - d_sem est le complément : hidden_size - d_pos
+        print("initializing PosBertIntermediate")
+        self.sem_dim = config.hidden_size
+
+        # On veut projeter dans un espace intermédiaire de dimension 4 * hidden_size.
+        # On répartit cet espace en deux branches :
+        # - branche positionnelle de dimension 4 * pos_sem
+        # - branche sémantique de dimension 4 * sem_dim
         self.sem_intermediate_dim = 4 * self.sem_dim
 
         # Les couches de projection sont appliquées sur les parties correspondantes de l'entrée.
-        self.dense_pos = nn.Linear(self.pos_dim, self.pos_intermediate_dim)
-        self.dense_sem = nn.Linear(self.sem_dim, self.sem_intermediate_dim)
+        self.dense = nn.Linear(self.sem_dim, self.sem_intermediate_dim)
 
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
@@ -540,24 +683,16 @@ class PosBertIntermediate(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         try:
-            # Séparation de l'entrée en deux branches :
-            # La première partie correspond aux dimensions positionnelles
-            pos_input = hidden_states[..., :self.pos_dim]   # [batch, seq_len, pos_dim]
-            # La seconde partie correspond aux dimensions sémantiques
-            sem_input = hidden_states[..., self.pos_dim:]     # [batch, seq_len, sem_dim]
-
             # Application des projections linéaires sur chaque branche
-            pos_out = self.dense_pos(pos_input)   # [batch, seq_len, 4 * pos_dim]
-            sem_out = self.dense_sem(sem_input)   # [batch, seq_len, 4 * sem_dim]
+            sem_out = self.dense(hidden_states)   # [batch, seq_len, 4 * sem_dim]
 
             # Application de l'activation sur chaque branche
-            pos_out = self.intermediate_act_fn(pos_out)
             sem_out = self.intermediate_act_fn(sem_out)
 
             # Regroupement par concaténation le long de la dernière dimension :
             # La sortie finale aura une dimension de 4 * (pos_dim + sem_dim) = 4 * hidden_size
-            hidden_states = torch.cat([pos_out, sem_out], dim=-1)
-            return hidden_states
+            return sem_out
+        
         except Exception as e:
             print(f"Error in PosBertIntermediate.forward: {e}")
             print(f"hidden_states type: {type(hidden_states)}, shape: {hidden_states.shape if hasattr(hidden_states, 'shape') else 'N/A'}")
@@ -570,15 +705,19 @@ class PosBertIntermediate(nn.Module):
 class PosBertLayer(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
+        print("initializing PosBertLayer")
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = PosBertAttention(config, layer_idx)
-        self.intermediate = PosBertIntermediate(config)
-        self.output = PosBertOutput(config)
+        self.pos_intermediate = PosBertIntermediate(config)
+        self.sem_intermediate = SemBertIntermediate(config)
+        self.pos_output = PosBertOutput(config)
+        self.sem_output = SemBertOutput(config)
 
     def forward(
         self,
-        hidden_states,
+        pos_hidden_states,
+        sem_hidden_states,
         attention_mask=None,
         head_mask=None,
         encoder_hidden_states=None,
@@ -586,26 +725,33 @@ class PosBertLayer(nn.Module):
         past_key_value=None,
         output_attentions=False,
     ):
+        
         try:
-            self_attention_outputs = self.attention(
-                hidden_states,
+            pos_attention_output, sem_attention_output, pos_attention_probs, sem_attention_probs = self.attention(
+                pos_hidden_states,
+                sem_hidden_states,
                 attention_mask,
                 head_mask,
                 output_attentions=output_attentions,
             )
-            attention_output = self_attention_outputs[0]
-            outputs = self_attention_outputs[1:]  # add self attentions if we output attention weights
+            # attention_output = self_attention_outputs[0]
+            outputs = (pos_attention_probs, sem_attention_probs) # add self attentions if we output attention weights
 
             # Version avec débogage sans chunking pour isoler le problème
-            intermediate_output = self.intermediate(attention_output)
-            layer_output = self.output(intermediate_output, attention_output)
+
+            pos_intermediate_output = self.pos_intermediate(pos_attention_output)
+            sem_intermediate_output = self.sem_intermediate(sem_attention_output)
+            print("after intermediate pos", pos_intermediate_output.shape)
+            print("after intermediate sem", sem_intermediate_output.shape)
+            pos_layer_output = self.pos_output(pos_intermediate_output, pos_attention_output)
+            sem_layer_output = self.sem_output(sem_intermediate_output, sem_attention_output)
 
             # Commentez la version avec chunking pour tester sans
             # layer_output = apply_chunking_to_forward(
             #     self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
             # )
-
-            outputs = (layer_output,) + outputs
+            
+            outputs = (pos_layer_output,sem_layer_output) + outputs
             return outputs
             
         except Exception as e:
@@ -628,6 +774,7 @@ class PosBertLayer(nn.Module):
 
 class PosBertEncoder(nn.Module):
     def __init__(self, config):
+        print("initializing PosBertEncoder")
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([
@@ -638,7 +785,8 @@ class PosBertEncoder(nn.Module):
 
     def forward(
         self,
-        hidden_states: torch.Tensor,
+        pos_hidden_states: torch.Tensor,
+        sem_hidden_states: torch.Tensor,
         attention_mask: Optional[torch.FloatTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
@@ -653,6 +801,7 @@ class PosBertEncoder(nn.Module):
 
         for i, layer_module in enumerate(self.layer):
             if output_hidden_states:
+                hidden_states = torch.cat([pos_hidden_states, sem_hidden_states], dim=-1)
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             layer_head_mask = head_mask[i] if head_mask is not None else None
@@ -665,7 +814,8 @@ class PosBertEncoder(nn.Module):
 
                 layer_outputs = self._gradient_checkpointing_func(
                     create_custom_forward(layer_module),
-                    hidden_states,
+                    pos_hidden_states,
+                    sem_hidden_states,
                     attention_mask,
                     layer_head_mask,
                     encoder_hidden_states,
@@ -674,22 +824,25 @@ class PosBertEncoder(nn.Module):
                 )
             else:
                 layer_outputs = layer_module(
-                    hidden_states,
+                    pos_hidden_states,
+                    sem_hidden_states,
                     attention_mask=attention_mask,
                     head_mask=layer_head_mask,
                     encoder_hidden_states=encoder_hidden_states,
                     encoder_attention_mask=encoder_attention_mask,
                     output_attentions=output_attentions,
                 )
+                pos_hidden_states, sem_hidden_states = layer_outputs[0], layer_outputs[1]
 
-            hidden_states = layer_outputs[0]
     
             if output_attentions:
-                all_self_attentions = all_self_attentions + (layer_outputs[1],)
+                all_self_attentions = all_self_attentions + layer_outputs[2:]
 
+        hidden_states = torch.cat([pos_hidden_states, sem_hidden_states], dim=-1)
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
+        print("ending the encoder!")
         if not return_dict:
             return tuple(
                 v
@@ -701,6 +854,7 @@ class PosBertEncoder(nn.Module):
                 ]
                 if v is not None
             )
+    
         return BaseModelOutputWithPastAndCrossAttentions(
             last_hidden_state=hidden_states,
             hidden_states=all_hidden_states,
@@ -711,6 +865,7 @@ class PosBertEncoder(nn.Module):
 
 class PosBertPooler(nn.Module):
     def __init__(self, config):
+        print("initializing PosBertPooler")
         super().__init__()
         # Ici, nous divisons hidden_size en deux parties.
         # Vous pouvez ajuster ce partage. Par exemple, ici on prend la moitié pour le positionnel
@@ -744,17 +899,19 @@ class PosBertPooler(nn.Module):
 class PosBertPredictionHeadTransform(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        self.dense = nn.Linear(config.pos_size + config.hidden_size, config.pos_size + config.hidden_size)
         if isinstance(config.hidden_act, str):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(config.pos_size + config.hidden_size, eps=config.layer_norm_eps)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        print("3", hidden_states.shape)
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
+        print("4", hidden_states.shape)
         return hidden_states
 
 
@@ -765,7 +922,7 @@ class PosBertLMPredictionHead(nn.Module):
 
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
-        self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.decoder = nn.Linear(config.pos_size + config.hidden_size, config.vocab_size, bias=False)
 
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
 
@@ -776,8 +933,12 @@ class PosBertLMPredictionHead(nn.Module):
         self.decoder.bias = self.bias
 
     def forward(self, hidden_states):
+        print("2", hidden_states.shape)
         hidden_states = self.transform(hidden_states)
+        print("5", hidden_states.shape)
+        print(self.decoder.weight.shape)
         hidden_states = self.decoder(hidden_states)
+        print("6", hidden_states.shape)
         return hidden_states
 
 
@@ -787,6 +948,7 @@ class PosBertOnlyMLMHead(nn.Module):
         self.predictions = PosBertLMPredictionHead(config)
 
     def forward(self, sequence_output: torch.Tensor) -> torch.Tensor:
+        print("1", sequence_output.shape)
         prediction_scores = self.predictions(sequence_output)
         return prediction_scores
 
@@ -961,8 +1123,11 @@ class PosBertModel(PosBertPreTrainedModel):
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
-
-        self.embeddings = PosBertEmbeddings(config)
+        print("initializing PosBertModel")
+        print(config)
+        self.sem_embeddings = SemBertEmbeddings(config)
+        self.pos_embeddings = PosBertEmbeddings(config)
+        print("set up sem and pos embed", self.sem_embeddings, self.pos_embeddings)
         self.encoder = PosBertEncoder(config)
 
         self.pooler = PosBertPooler(config) if add_pooling_layer else None
@@ -973,7 +1138,8 @@ class PosBertModel(PosBertPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        return self.embeddings.word_embeddings
+        print("got input embeddings", self.pos_embeddings.position_embeddings)
+        return self.pos_embeddings.position_embeddings
 
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
@@ -1018,6 +1184,7 @@ class PosBertModel(PosBertPreTrainedModel):
             - 0 for tokens that are **masked**.
         
         """
+        
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1045,12 +1212,22 @@ class PosBertModel(PosBertPreTrainedModel):
             else:
                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
-        embedding_output = self.embeddings(
+
+        print("input ids shape", input_ids.shape)
+        pos_embedding_output = self.pos_embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
             token_type_ids=token_type_ids,
             inputs_embeds=inputs_embeds,
         )
+
+        sem_embedding_output = self.sem_embeddings(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+        )
+
+        print("got pos embeddings", pos_embedding_output.shape)
+        print("got sem embeddings", sem_embedding_output.shape)
 
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_length), device=device)
@@ -1063,11 +1240,12 @@ class PosBertModel(PosBertPreTrainedModel):
 
         # Expand the attention mask
         if use_sdpa_attention_masks and attention_mask.dim() == 2:
+            # raise NotImplementedError
             # Expand the attention mask for SDPA.
             # [bsz, seq_len] -> [bsz, 1, seq_len, seq_len]
 
             extended_attention_mask = _prepare_4d_attention_mask_for_sdpa(
-                attention_mask, embedding_output.dtype, tgt_len=seq_length
+                attention_mask, pos_embedding_output.dtype, tgt_len=seq_length
             )
         else:
             # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
@@ -1086,7 +1264,8 @@ class PosBertModel(PosBertPreTrainedModel):
         head_mask = self.get_head_mask(head_mask, self.config.num_hidden_layers)
 
         encoder_outputs = self.encoder(
-            embedding_output,
+            pos_embedding_output,
+            sem_embedding_output,
             attention_mask=extended_attention_mask,
             head_mask=head_mask,
             encoder_hidden_states=encoder_hidden_states,
@@ -1324,7 +1503,7 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-
+        print("starting posbert for masked LM")
         self.bert = PosBertModel(config, add_pooling_layer=False)
         self.cls = PosBertOnlyMLMHead(config)
 
@@ -1332,9 +1511,11 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
         self.post_init()
 
     def get_output_embeddings(self):
+        print("CALLED GET OUTPUT EMBEDDINGS")
         return self.cls.predictions.decoder
 
     def set_output_embeddings(self, new_embeddings):
+        print("CALLED SET OUTPUT EMBEDDINGS")
         self.cls.predictions.decoder = new_embeddings
         self.cls.predictions.bias = new_embeddings.bias
 
@@ -1385,6 +1566,8 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
+        print("sequence output shape", sequence_output.shape)
+        print("uuuuuuh", self.cls.predictions.decoder.weight.shape)
         prediction_scores = self.cls(sequence_output)
 
         masked_lm_loss = None
