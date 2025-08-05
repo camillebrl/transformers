@@ -160,7 +160,7 @@ class SemBertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        print("initializing SemBertEmbeddings")
+        # print("initializing SemBertEmbeddings")
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
 
         # self.LayerNorm is not snake-cased to stick with TensorFlow model variable name and be able to load
@@ -173,7 +173,7 @@ class SemBertEmbeddings(nn.Module):
         input_ids: Optional[torch.LongTensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
     ) -> torch.Tensor:
-        print("forward SemBertEmbeddings")
+        # print("forward SemBertEmbeddings")
         if inputs_embeds is None:
             inputs_embeds = self.word_embeddings(input_ids)
 
@@ -188,7 +188,7 @@ class PosBertEmbeddings(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        print("initializing PosBertEmbeddings")
+        # print("initializing PosBertEmbeddings")
         self.position_embeddings = nn.Embedding(config.max_position_embeddings, config.pos_size)
         self.token_type_embeddings = nn.Embedding(config.type_vocab_size, config.pos_size)
 
@@ -213,7 +213,7 @@ class PosBertEmbeddings(nn.Module):
         inputs_embeds: Optional[torch.FloatTensor] = None,
         past_key_values_length: int = 0,
     ) -> torch.Tensor:
-        print("forward PosBertEmbeddings")
+        # print("forward PosBertEmbeddings")
         if input_ids is not None:
             input_shape = input_ids.size()
         else:
@@ -249,7 +249,7 @@ class PosBertEmbeddings(nn.Module):
 class PosBertSelfAttention(nn.Module):
     def __init__(self, config, position_embedding_type=None, layer_idx=None):
         super().__init__()
-        print("initializing PosBertSelfAttention")
+        # print("initializing PosBertSelfAttention")
         if config.hidden_size % config.num_attention_heads != 0 and not hasattr(config, "embedding_size"):
             raise ValueError(
                 f"The hidden size ({config.hidden_size}) is not a multiple of the number of attention "
@@ -333,31 +333,31 @@ class PosBertSelfAttention(nn.Module):
     ):
         batch_size, seq_length, _ = pos_hidden_states.size()
 
-        print("hidden_size", self.config.hidden_size)
-        print("positional head dim", pos_hidden_states.shape)
-        print("semantic head dim", sem_hidden_states.shape)
+        # print("hidden_size", self.config.hidden_size)
+        # print("positional head dim", pos_hidden_states.shape)
+        # print("semantic head dim", sem_hidden_states.shape)
         # Séparation des parties positionnelle et sémantique
         # p = hidden_states[:, :, :self.positional_dim]  # [batch, seq_len, positional_dim]
         # s = hidden_states[:, :, self.positional_dim:]  # [batch, seq_len, semantic_dim]
 
 
         if self.config.fully_indep_sem_pos : 
-            print("compute Q")
+            # print("compute Q")
             query_pos_layer = self.pos_query(pos_hidden_states)
             query_sem_layer = self.sem_query(sem_hidden_states)
 
-            print("compute K")
+            # print("compute K")
             key_pos_layer = self.pos_key(pos_hidden_states)
             key_sem_layer = self.sem_key(sem_hidden_states)
 
         else :
             hidden_states = torch.concat([pos_hidden_states, sem_hidden_states], dim=-1)
-            print("compute full")
+            # print("compute full")
             query_layer = self.query(hidden_states)
             key_layer = self.query(hidden_states)
-            print(query_layer.shape, key_layer.shape)
+            # print(query_layer.shape, key_layer.shape)
             
-        print("computy V")
+        # print("computy V")
         value_pos_layer = self.pos_value(pos_hidden_states)
         value_sem_layer = self.sem_value(sem_hidden_states)
 
@@ -400,21 +400,21 @@ class PosBertSelfAttention(nn.Module):
 
         if self.config.fully_indep_sem_pos : 
             # POSITIONAL ATTENTION
-            print("computing pos context")
+            # print("computing pos context")
             pos_attention_probs, pos_context = compute_attention_probs_and_context(query_pos_layer, key_pos_layer, value_pos_layer, attention_mask, "pos")
 
 
             # SEMANTIC ATTENTION
-            print("computing sem context")
+            # print("computing sem context")
             sem_attention_probs, sem_context = compute_attention_probs_and_context(query_sem_layer, key_sem_layer, value_sem_layer, attention_mask, "sem")
         
         else :
             # POSITIONAL ATTENTION
-            print("computing mixed pos context")
+            # print("computing mixed pos context")
             pos_attention_probs, pos_context = compute_attention_probs_and_context(query_layer, key_layer, value_pos_layer, attention_mask, "all", "pos")
 
             # SEMANTIC ATTENTION
-            print("computing mixed sem context")
+            # print("computing mixed sem context")
             sem_attention_probs, sem_context = compute_attention_probs_and_context(query_layer, key_layer, value_sem_layer, attention_mask, "all", "sem")
        
         # Concaténation des résultats
@@ -428,7 +428,7 @@ class PosBertSelfAttention(nn.Module):
 class PosBertAttention(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
-        print("initializing PosBertAttention")
+        # print("initializing PosBertAttention")
         self.self = PosBertSelfAttention(config, layer_idx)
         self.pos_output = PosBertSelfOutput(config)
         self.sem_output = SemBertSelfOutput(config)
@@ -464,6 +464,7 @@ class PosBertAttention(nn.Module):
         encoder_attention_mask=None, 
         output_attentions=False
     ): 
+        # print("before self attention", pos_hidden_states.shape, sem_hidden_states.shape)
         pos_context, sem_context, pos_attention_probs, sem_attention_probs = self.self(
             pos_hidden_states,
             sem_hidden_states,
@@ -473,6 +474,7 @@ class PosBertAttention(nn.Module):
             encoder_attention_mask,
             output_attentions=True,  # Forcé à True pour avoir les scores bruts
         )
+        # print("after self attention", pos_context.shape, sem_context.shape)
 
         # # Vérification de la sortie de self-attention
         # assert self_outputs[0].shape == hidden_states.shape, (
@@ -480,11 +482,12 @@ class PosBertAttention(nn.Module):
         #     f"does not match hidden_states shape {hidden_states.shape}"
         # )
 
-        print("out of self attention")
-        print("pos context shape", pos_context.shape)
-        print("sem context shape", sem_context.shape)
+        # print("out of self attention")
+        # print("pos context shape", pos_context.shape)
+        # print("sem context shape", sem_context.shape)
         pos_attention_output = self.pos_output(pos_context, pos_hidden_states)
         sem_attention_output = self.sem_output(sem_context, sem_hidden_states)
+        # print("after self attention output", pos_attention_output.shape, sem_attention_output.shape)
         
 
         # Vérification de la sortie finale
@@ -504,7 +507,7 @@ class PosBertAttention(nn.Module):
 class PosBertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
-        print("initializing PosBertSOutput")
+        # print("initializing PosBertSOutput")
         # Dimensions de l'espace d'origine
         # Dimension positionnelle = d_head
         self.pos_dim = config.pos_size
@@ -538,7 +541,7 @@ class PosBertOutput(nn.Module):
 class SemBertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
-        print("initializing SemBertSOutput")
+        # print("initializing SemBertSOutput")
         # Dimensions de l'espace d'origine
         # Dimension positionnelle = d_head
         self.sem_dim = config.hidden_size
@@ -573,7 +576,7 @@ class SemBertOutput(nn.Module):
 class SemBertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
-        print("initializing SemBertSelfOutput")
+        # print("initializing SemBertSelfOutput")
         # Détermination des dimensions pour la branche positionnelle et sémantique
         self.sem_dim = config.hidden_size
 
@@ -585,7 +588,7 @@ class SemBertSelfOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, sem_hidden_states: torch.Tensor, sem_input_tensor: torch.Tensor) -> torch.Tensor:
-        print("in sembertselfoutput forward")
+        # print("in sembertselfoutput forward")
         # Application des projections linéaires sur chacune des branches
         sem_output = self.dense(sem_hidden_states)            # [batch, seq_len, pos_dim]
 
@@ -598,7 +601,7 @@ class PosBertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
         # Détermination des dimensions pour la branche positionnelle et sémantique
-        print("initializing PosBertSelfOutput")
+        # print("initializing PosBertSelfOutput")
         self.pos_dim = config.pos_size
 
         # Projections linéaires distinctes pour chaque branche :
@@ -609,11 +612,11 @@ class PosBertSelfOutput(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
     def forward(self, pos_hidden_states: torch.Tensor, pos_input_tensor: torch.Tensor) -> torch.Tensor:
-        print("in posbertselfoutput forward")
+        # print("in posbertselfoutput forward")
         # Application des projections linéaires sur chacune des branches
         pos_output = self.dense(pos_hidden_states)            # [batch, seq_len, pos_dim]
-        print("pos_output", pos_output.shape)
-        print("pos_input_tensor", pos_input_tensor.shape)
+        # print("pos_output", pos_output.shape)
+        # print("pos_input_tensor", pos_input_tensor.shape)
         # Reconstruction de la sortie en concaténant les deux branches
         pos_output = self.dropout(pos_output)
         pos_output = self.LayerNorm(pos_output + pos_input_tensor)
@@ -627,7 +630,7 @@ class PosBertIntermediate(nn.Module):
         # On décompose l'espace d'entrée (hidden_size) en deux parties :
         # - d_pos est défini comme d_head = hidden_size // num_attention_heads
         # - d_sem est le complément : hidden_size - d_pos
-        print("initializing PosBertIntermediate")
+        # print("initializing PosBertIntermediate")
         self.pos_dim = config.pos_size
 
         # On veut projeter dans un espace intermédiaire de dimension 4 * hidden_size.
@@ -638,7 +641,7 @@ class PosBertIntermediate(nn.Module):
 
         # Les couches de projection sont appliquées sur les parties correspondantes de l'entrée.
         self.dense = nn.Linear(self.pos_dim, self.pos_intermediate_dim)
-        print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim)
+        # print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim)
 
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
@@ -648,7 +651,7 @@ class PosBertIntermediate(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         
         # Application des projections linéaires sur chaque branche
-        print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim, hidden_states.shape)
+        # print("IIIIIIIIIIIIIIIIIII", self.dense, self.pos_dim, self.pos_intermediate_dim, hidden_states.shape)
         pos_out = self.dense(hidden_states)   # [batch, seq_len, 4 * pos_dim]
 
         # Application de l'activation sur chaque branche
@@ -664,7 +667,7 @@ class SemBertIntermediate(nn.Module):
         # On décompose l'espace d'entrée (hidden_size) en deux parties :
         # - d_pos est défini comme d_head = hidden_size // num_attention_heads
         # - d_sem est le complément : hidden_size - d_pos
-        print("initializing PosBertIntermediate")
+        # print("initializing PosBertIntermediate")
         self.sem_dim = config.hidden_size
 
         # On veut projeter dans un espace intermédiaire de dimension 4 * hidden_size.
@@ -694,10 +697,10 @@ class SemBertIntermediate(nn.Module):
             return sem_out
         
         except Exception as e:
-            print(f"Error in PosBertIntermediate.forward: {e}")
-            print(f"hidden_states type: {type(hidden_states)}, shape: {hidden_states.shape if hasattr(hidden_states, 'shape') else 'N/A'}")
-            print(f"self.dense_pos.weight type: {type(self.dense_pos.weight)}, shape: {self.dense_pos.weight.shape if hasattr(self.dense_pos.weight, 'shape') else 'N/A'}")
-            print(f"self.dense_sem.weight type: {type(self.dense_sem.weight)}, shape: {self.dense_sem.weight.shape if hasattr(self.dense_sem.weight, 'shape') else 'N/A'}")
+            # print(f"Error in PosBertIntermediate.forward: {e}")
+            # print(f"hidden_states type: {type(hidden_states)}, shape: {hidden_states.shape if hasattr(hidden_states, 'shape') else 'N/A'}")
+            # print(f"self.dense_pos.weight type: {type(self.dense_pos.weight)}, shape: {self.dense_pos.weight.shape if hasattr(self.dense_pos.weight, 'shape') else 'N/A'}")
+            # print(f"self.dense_sem.weight type: {type(self.dense_sem.weight)}, shape: {self.dense_sem.weight.shape if hasattr(self.dense_sem.weight, 'shape') else 'N/A'}")
             raise
 
 
@@ -705,7 +708,7 @@ class SemBertIntermediate(nn.Module):
 class PosBertLayer(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
-        print("initializing PosBertLayer")
+        # print("initializing PosBertLayer")
         self.chunk_size_feed_forward = config.chunk_size_feed_forward
         self.seq_len_dim = 1
         self.attention = PosBertAttention(config, layer_idx)
@@ -738,14 +741,14 @@ class PosBertLayer(nn.Module):
             outputs = (pos_attention_probs, sem_attention_probs) # add self attentions if we output attention weights
 
             # Version avec débogage sans chunking pour isoler le problème
-
+            # print("after attention", pos_attention_output.shape, sem_attention_output.shape)
             pos_intermediate_output = self.pos_intermediate(pos_attention_output)
             sem_intermediate_output = self.sem_intermediate(sem_attention_output)
-            print("after intermediate pos", pos_intermediate_output.shape)
-            print("after intermediate sem", sem_intermediate_output.shape)
+            # print("after intermediate pos", pos_intermediate_output.shape)
+            # print("after intermediate sem", sem_intermediate_output.shape)
             pos_layer_output = self.pos_output(pos_intermediate_output, pos_attention_output)
             sem_layer_output = self.sem_output(sem_intermediate_output, sem_attention_output)
-
+            # print("after inter & output", pos_layer_output.shape, sem_layer_output.shape)
             # Commentez la version avec chunking pour tester sans
             # layer_output = apply_chunking_to_forward(
             #     self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, attention_output
@@ -755,7 +758,7 @@ class PosBertLayer(nn.Module):
             return outputs
             
         except Exception as e:
-            print(f"Error in PosBertLayer.forward: {e}")
+            # print(f"Error in PosBertLayer.forward: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -766,7 +769,7 @@ class PosBertLayer(nn.Module):
             layer_output = self.output(intermediate_output, attention_output)
             return layer_output
         except Exception as e:
-            print(f"Error in feed_forward_chunk: {e}")
+            # print(f"Error in feed_forward_chunk: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -774,7 +777,7 @@ class PosBertLayer(nn.Module):
 
 class PosBertEncoder(nn.Module):
     def __init__(self, config):
-        print("initializing PosBertEncoder")
+        # print("initializing PosBertEncoder")
         super().__init__()
         self.config = config
         self.layer = nn.ModuleList([
@@ -832,17 +835,20 @@ class PosBertEncoder(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     output_attentions=output_attentions,
                 )
-                pos_hidden_states, sem_hidden_states = layer_outputs[0], layer_outputs[1]
-
+            
+            pos_hidden_states, sem_hidden_states = layer_outputs[0], layer_outputs[1]
     
             if output_attentions:
                 all_self_attentions = all_self_attentions + layer_outputs[2:]
-
+        # print("before concat")
+        # print(pos_hidden_states.shape)
+        # print(sem_hidden_states.shape)
         hidden_states = torch.cat([pos_hidden_states, sem_hidden_states], dim=-1)
+        # print(hidden_states.shape)
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
 
-        print("ending the encoder!")
+        # print("ending the encoder!")
         if not return_dict:
             return tuple(
                 v
@@ -865,7 +871,7 @@ class PosBertEncoder(nn.Module):
 
 class PosBertPooler(nn.Module):
     def __init__(self, config):
-        print("initializing PosBertPooler")
+        # print("initializing PosBertPooler")
         super().__init__()
         # Ici, nous divisons hidden_size en deux parties.
         # Vous pouvez ajuster ce partage. Par exemple, ici on prend la moitié pour le positionnel
@@ -897,33 +903,40 @@ class PosBertPooler(nn.Module):
 
 
 class PosBertPredictionHeadTransform(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, input_size):
         super().__init__()
-        self.dense = nn.Linear(config.pos_size + config.hidden_size, config.pos_size + config.hidden_size)
+        self.dense = nn.Linear(input_size, input_size)
         if isinstance(config.hidden_act, str):
             self.transform_act_fn = ACT2FN[config.hidden_act]
         else:
             self.transform_act_fn = config.hidden_act
-        self.LayerNorm = nn.LayerNorm(config.pos_size + config.hidden_size, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(input_size, eps=config.layer_norm_eps)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        print("3", hidden_states.shape)
+        # print("3", hidden_states.shape)
         hidden_states = self.dense(hidden_states)
         hidden_states = self.transform_act_fn(hidden_states)
         hidden_states = self.LayerNorm(hidden_states)
-        print("4", hidden_states.shape)
+        # print("4", hidden_states.shape)
         return hidden_states
 
 
 class PosBertLMPredictionHead(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.transform = PosBertPredictionHeadTransform(config)
+        self.use_only_sem_for_decoding = config.use_only_sem_for_decoding
 
+        input_size = config.hidden_size
+        if not config.use_only_sem_for_decoding :
+            # print("using full input size")
+            input_size += config.pos_size
+            
+        # print("using input size", input_size)
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
-        self.decoder = nn.Linear(config.pos_size + config.hidden_size, config.vocab_size, bias=False)
-
+        self.transform = PosBertPredictionHeadTransform(config, input_size)
+        self.decoder = nn.Linear(input_size, config.vocab_size, bias=False)
+        # print("init decoder", self.decoder, input_size, config.vocab_size)
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
@@ -933,12 +946,13 @@ class PosBertLMPredictionHead(nn.Module):
         self.decoder.bias = self.bias
 
     def forward(self, hidden_states):
-        print("2", hidden_states.shape)
+        # print("2", hidden_states.shape)
         hidden_states = self.transform(hidden_states)
-        print("5", hidden_states.shape)
-        print(self.decoder.weight.shape)
+        # print("5", hidden_states.shape)
+        # print("using decoder", self.decoder)
+        # print("using decoder", self.decoder.weight.shape)
         hidden_states = self.decoder(hidden_states)
-        print("6", hidden_states.shape)
+        # print("6", hidden_states.shape)
         return hidden_states
 
 
@@ -946,9 +960,18 @@ class PosBertOnlyMLMHead(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.predictions = PosBertLMPredictionHead(config)
+        self.use_only_sem_for_decoding = config.use_only_sem_for_decoding
+        self.pos_size = config.pos_size
+
 
     def forward(self, sequence_output: torch.Tensor) -> torch.Tensor:
-        print("1", sequence_output.shape)
+        # print("1", sequence_output.shape)
+        if self.use_only_sem_for_decoding :
+            # print("cutting output")  
+            # print("sequence_output shape before", sequence_output.shape)
+            sequence_output = sequence_output[..., self.pos_size:]
+        # print("sequence_output shape after", sequence_output.shape)
+
         prediction_scores = self.predictions(sequence_output)
         return prediction_scores
 
@@ -1123,11 +1146,11 @@ class PosBertModel(PosBertPreTrainedModel):
     def __init__(self, config, add_pooling_layer=True):
         super().__init__(config)
         self.config = config
-        print("initializing PosBertModel")
-        print(config)
+        # print("initializing PosBertModel")
+        # print(config)
         self.sem_embeddings = SemBertEmbeddings(config)
         self.pos_embeddings = PosBertEmbeddings(config)
-        print("set up sem and pos embed", self.sem_embeddings, self.pos_embeddings)
+        # print("set up sem and pos embed", self.sem_embeddings, self.pos_embeddings)
         self.encoder = PosBertEncoder(config)
 
         self.pooler = PosBertPooler(config) if add_pooling_layer else None
@@ -1138,8 +1161,9 @@ class PosBertModel(PosBertPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
-        print("got input embeddings", self.pos_embeddings.position_embeddings)
-        return self.pos_embeddings.position_embeddings
+        # print("got input embeddings", self.sem_embeddings.word_embeddings)
+
+        return self.sem_embeddings.word_embeddings
 
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
@@ -1213,7 +1237,7 @@ class PosBertModel(PosBertPreTrainedModel):
                 token_type_ids = torch.zeros(input_shape, dtype=torch.long, device=device)
 
 
-        print("input ids shape", input_ids.shape)
+        # print("input ids shape", input_ids.shape)
         pos_embedding_output = self.pos_embeddings(
             input_ids=input_ids,
             position_ids=position_ids,
@@ -1226,8 +1250,8 @@ class PosBertModel(PosBertPreTrainedModel):
             inputs_embeds=inputs_embeds,
         )
 
-        print("got pos embeddings", pos_embedding_output.shape)
-        print("got sem embeddings", sem_embedding_output.shape)
+        # print("got pos embeddings", pos_embedding_output.shape)
+        # print("got sem embeddings", sem_embedding_output.shape)
 
         if attention_mask is None:
             attention_mask = torch.ones((batch_size, seq_length), device=device)
@@ -1310,6 +1334,7 @@ class PosBertForPreTraining(PosBertPreTrainedModel):
         self.post_init()
 
     def get_output_embeddings(self):
+        # print("called get output embedings in PosBertForPreTraining")
         return self.cls.predictions.decoder
 
     def set_output_embeddings(self, new_embeddings):
@@ -1417,6 +1442,7 @@ class PosBertLMHeadModel(PosBertPreTrainedModel, GenerationMixin):
         self.post_init()
 
     def get_output_embeddings(self):
+        # print("called get output embedings in PosBertLMHeadModel")
         return self.cls.predictions.decoder
 
     def set_output_embeddings(self, new_embeddings):
@@ -1503,7 +1529,7 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        print("starting posbert for masked LM")
+        # print("starting posbert for masked LM")
         self.bert = PosBertModel(config, add_pooling_layer=False)
         self.cls = PosBertOnlyMLMHead(config)
 
@@ -1511,11 +1537,11 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
         self.post_init()
 
     def get_output_embeddings(self):
-        print("CALLED GET OUTPUT EMBEDDINGS")
+        # print("called get output embedings in PosBertForMaskedLM")
         return self.cls.predictions.decoder
 
     def set_output_embeddings(self, new_embeddings):
-        print("CALLED SET OUTPUT EMBEDDINGS")
+        # print("CALLED SET OUTPUT EMBEDDINGS")
         self.cls.predictions.decoder = new_embeddings
         self.cls.predictions.bias = new_embeddings.bias
 
@@ -1566,8 +1592,8 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        print("sequence output shape", sequence_output.shape)
-        print("uuuuuuh", self.cls.predictions.decoder.weight.shape)
+        # print("sequence output shape", sequence_output.shape)
+        # print("uuuuuuh", self.cls.predictions.decoder.weight.shape)
         prediction_scores = self.cls(sequence_output)
 
         masked_lm_loss = None
