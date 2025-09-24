@@ -103,9 +103,11 @@ class PosBertConfig(PretrainedConfig):
         pos_size=384,
         num_hidden_layers=12,
         num_attention_heads=12,
-        intermediate_size=3072,
+        pos_intermediate_size=1536,
+        sem_intermediate_size=3072,
         hidden_act="gelu",
-        hidden_dropout_prob=0.1,
+        pos_hidden_dropout_prob=0.1,
+        sem_hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
         max_position_embeddings=512,
         type_vocab_size=2,
@@ -117,6 +119,7 @@ class PosBertConfig(PretrainedConfig):
         position_embedding_type="absolute",
         use_cache=True,
         classifier_dropout=None,
+        pos_sem_mixed_feed_forward = False,
         **kwargs,
     ):
         super().__init__(pad_token_id=pad_token_id, **kwargs)
@@ -127,8 +130,10 @@ class PosBertConfig(PretrainedConfig):
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
         self.hidden_act = hidden_act
-        self.intermediate_size = intermediate_size
-        self.hidden_dropout_prob = hidden_dropout_prob
+        self.pos_intermediate_size = pos_intermediate_size
+        self.sem_intermediate_size = sem_intermediate_size
+        self.pos_hidden_dropout_prob = pos_hidden_dropout_prob
+        self.sem_hidden_dropout_prob = sem_hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
         self.max_position_embeddings = max_position_embeddings
         self.type_vocab_size = type_vocab_size
@@ -139,6 +144,7 @@ class PosBertConfig(PretrainedConfig):
         self.classifier_dropout = classifier_dropout
         self.fully_indep_sem_pos= fully_indep_sem_pos
         self.use_only_sem_for_decoding = use_only_sem_for_decoding
+        self.pos_sem_mixed_feed_forward = pos_sem_mixed_feed_forward
 
 class BertOnnxConfig(OnnxConfig):
     @property
