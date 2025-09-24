@@ -778,7 +778,7 @@ class PosBertLayer(nn.Module):
             # # Commentez la version avec chunking pour tester sans
             if self.pos_sem_mixed_feed_forward :
                 layer_output = apply_chunking_to_forward(
-                    self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, pos_attention_output, torch.cat([pos_attention_output, sem_attention_output], dim=-1)
+                    self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, torch.cat([pos_attention_output, sem_attention_output], dim=-1)
                 )
                 
                 pos_layer_output = layer_output[..., :self.pos_dim]
