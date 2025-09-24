@@ -356,7 +356,7 @@ class PosBertSelfAttention(nn.Module):
         else :
             hidden_states = torch.concat([pos_hidden_states, sem_hidden_states], dim=-1)
             query_layer = self.query(hidden_states)
-            key_layer = self.query(hidden_states)
+            key_layer = self.key(hidden_states)
             
         value_pos_layer = self.pos_value(pos_hidden_states)
         value_sem_layer = self.sem_value(sem_hidden_states)
@@ -510,20 +510,20 @@ class PosBertAttention(nn.Module):
 class PosBertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.pos_dim = config.pos_size
+        self.pos_size = config.pos_size
         
-        self.intermediate_pos_dim = config.pos_intermediate_size
-        # Vérification implicite : self.intermediate_pos_dim + self.intermediate_sem_dim == config.intermediate_size
+        self.intermediate_pos_size = config.pos_intermediate_size
+        # Vérification implicite : self.intermediate_pos_size + self.intermediate_sem_dim == config.intermediate_size
         
         # Deux projections linéaires distinctes sur chaque branche
-        self.dense = nn.Linear(self.intermediate_pos_dim, self.pos_dim)
+        self.dense = nn.Linear(self.intermediate_pos_size, self.pos_size)
         
-        self.LayerNorm = nn.LayerNorm(self.pos_dim, eps=config.layer_norm_eps)
+        self.LayerNorm = nn.LayerNorm(self.pos_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.pos_hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
         # Application des projections linéaires distinctes
-        pos_out = self.dense(hidden_states)  # [batch, seq_len, pos_dim]
+        pos_out = self.dense(hidden_states)  # [batch, seq_len, pos_size]
         
         pos_out = self.dropout(pos_out)
         output = self.LayerNorm(pos_out + input_tensor)
@@ -586,7 +586,7 @@ class SemBertSelfOutput(nn.Module):
 
     def forward(self, sem_hidden_states: torch.Tensor, sem_input_tensor: torch.Tensor) -> torch.Tensor:
 
-        sem_output = self.dense(sem_hidden_states)            # [batch, seq_len, pos_dim]
+        sem_output = self.dense(sem_hidden_states)            # [batch, seq_len, pos_size]
 
         sem_output = self.dropout(sem_output)
         sem_output = self.LayerNorm(sem_output + sem_input_tensor)
@@ -596,14 +596,14 @@ class PosBertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.pos_dim = config.pos_size
-        self.dense = nn.Linear(self.pos_dim, self.pos_dim)
+        self.pos_size = config.pos_size
+        self.dense = nn.Linear(self.pos_size, self.pos_size)
 
         self.LayerNorm = nn.LayerNorm(config.pos_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.pos_hidden_dropout_prob)
 
     def forward(self, pos_hidden_states: torch.Tensor, pos_input_tensor: torch.Tensor) -> torch.Tensor:
-        pos_output = self.dense(pos_hidden_states)            # [batch, seq_len, pos_dim]
+        pos_output = self.dense(pos_hidden_states)            # [batch, seq_len, pos_size]
 
         pos_output = self.dropout(pos_output)
         pos_output = self.LayerNorm(pos_output + pos_input_tensor)
@@ -620,7 +620,7 @@ class BertSelfOutput(nn.Module):
         self.dropout = nn.Dropout(config.sem_hidden_dropout_prob)
 
     def forward(self, hidden_states: torch.Tensor, input_tensor: torch.Tensor) -> torch.Tensor:
-        pos_output = self.dense(hidden_states)            # [batch, seq_len, pos_dim]
+        pos_output = self.dense(hidden_states)            # [batch, seq_len, pos_size]
 
         pos_output = self.dropout(pos_output)
         pos_output = self.LayerNorm(pos_output + input_tensor)
@@ -631,11 +631,11 @@ class BertSelfOutput(nn.Module):
 class PosBertIntermediate(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.pos_dim = config.pos_size
+        self.pos_size = config.pos_size
         self.pos_intermediate_dim = config.pos_intermediate_size
         
         # Les couches de projection sont appliquées sur les parties correspondantes de l'entrée.
-        self.dense = nn.Linear(self.pos_dim, self.pos_intermediate_dim)
+        self.dense = nn.Linear(self.pos_size, self.pos_intermediate_dim)
 
         if isinstance(config.hidden_act, str):
             self.intermediate_act_fn = ACT2FN[config.hidden_act]
@@ -644,7 +644,7 @@ class PosBertIntermediate(nn.Module):
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         
-        pos_out = self.dense(hidden_states)   # [batch, seq_len, 4 * pos_dim]
+        pos_out = self.dense(hidden_states)   # [batch, seq_len, 4 * pos_size]
 
         # Application de l'activation sur chaque branche
         pos_out = self.intermediate_act_fn(pos_out)
@@ -727,7 +727,7 @@ class PosBertLayer(nn.Module):
         self.seq_len_dim = 1
         self.pos_sem_mixed_feed_forward = config.pos_sem_mixed_feed_forward
         self.attention = PosBertAttention(config, layer_idx)
-        self.pos_dim = config.pos_size
+        self.pos_size = config.pos_size
 
         if self.pos_sem_mixed_feed_forward :
             self.intermediate = BertIntermediate(config)
@@ -781,8 +781,8 @@ class PosBertLayer(nn.Module):
                     self.feed_forward_chunk, self.chunk_size_feed_forward, self.seq_len_dim, torch.cat([pos_attention_output, sem_attention_output], dim=-1)
                 )
                 
-                pos_layer_output = layer_output[..., :self.pos_dim]
-                sem_layer_output = layer_output[..., self.pos_dim:]
+                pos_layer_output = layer_output[..., :self.pos_size]
+                sem_layer_output = layer_output[..., self.pos_size:]
 
 
             else :
@@ -961,9 +961,9 @@ class PosBertPooler(nn.Module):
         sem_transformed = self.dense(sem_part)  # [batch, sem_dim]
         
         if not self.use_only_sem_for_decoding :
-            pos_part = first_token_tensor[:, :self.pos_size]  # [batch, pos_dim]
+            pos_part = first_token_tensor[:, :self.pos_size]  # [batch, pos_size]
             # Transformation linéaire distincte pour chaque partie
-            pos_transformed = self.pos_dense(pos_part)  # [batch, pos_dim]
+            pos_transformed = self.pos_dense(pos_part)  # [batch, pos_size]
             pooled_output = torch.cat([pos_transformed, sem_transformed], dim=-1)  # [batch, hidden_size]
         
         else : 
