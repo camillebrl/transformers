@@ -115,7 +115,7 @@ class PosBertConfig(PretrainedConfig):
         layer_norm_eps=1e-12,
         pad_token_id=0,
         fully_indep_sem_pos = False,
-        use_only_sem_for_decoding = False,
+        use_only_sem_for_decoding = True,
         position_embedding_type="absolute",
         use_cache=True,
         classifier_dropout=None,

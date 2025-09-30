@@ -613,7 +613,7 @@ class BertSelfOutput(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.dim = config.pos_size + config.hiddens_size
+        self.dim = config.pos_size + config.hidden_size
         self.dense = nn.Linear(self.dim, self.dim)
 
         self.LayerNorm = nn.LayerNorm(self.dim, eps=config.layer_norm_eps)
@@ -1829,13 +1829,16 @@ class PosBertForSequenceClassification(PosBertPreTrainedModel):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
+        self.use_only_sem_for_decoding = config.use_only_sem_for_decoding
+        self.pos_size = config.pos_size
 
         self.bert = PosBertModel(config)
         classifier_dropout = (
             config.classifier_dropout if config.classifier_dropout is not None else config.sem_hidden_dropout_prob
         )
         self.dropout = nn.Dropout(classifier_dropout)
-        self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier = nn.Linear(config.hidden_size if self.use_only_sem_for_decoding else config.hidden_size + config.pos_size, 
+                                    config.num_labels)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1884,7 +1887,10 @@ class PosBertForSequenceClassification(PosBertPreTrainedModel):
         pooled_output = outputs[1]
 
         pooled_output = self.dropout(pooled_output)
-        logits = self.classifier(pooled_output)
+        if  self.use_only_sem_for_decoding : 
+            logits = self.classifier(pooled_output[:, self.pos_size:])
+        else :
+            logits = self.classifier(pooled_output)
 
         loss = None
         if labels is not None:
