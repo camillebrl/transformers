@@ -1698,21 +1698,21 @@ class PosBertForMaskedLM(PosBertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-    def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
-        input_shape = input_ids.shape
-        effective_batch_size = input_shape[0]
+    # def prepare_inputs_for_generation(self, input_ids, attention_mask=None, **model_kwargs):
+    #     input_shape = input_ids.shape
+    #     effective_batch_size = input_shape[0]
 
-        #  add a dummy token
-        if self.config.pad_token_id is None:
-            raise ValueError("The PAD token should be defined for generation")
+    #     #  add a dummy token
+    #     if self.config.pad_token_id is None:
+    #         raise ValueError("The PAD token should be defined for generation")
 
-        attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((attention_mask.shape[0], 1))], dim=-1)
-        dummy_token = torch.full(
-            (effective_batch_size, 1), self.config.pad_token_id, dtype=torch.long, device=input_ids.device
-        )
-        input_ids = torch.cat([input_ids, dummy_token], dim=1)
+    #     attention_mask = torch.cat([attention_mask, attention_mask.new_zeros((attention_mask.shape[0], 1))], dim=-1)
+    #     dummy_token = torch.full(
+    #         (effective_batch_size, 1), self.config.pad_token_id, dtype=torch.long, device=input_ids.device
+    #     )
+    #     input_ids = torch.cat([input_ids, dummy_token], dim=1)
 
-        return {"input_ids": input_ids, "attention_mask": attention_mask}
+    #     return {"input_ids": input_ids, "attention_mask": attention_mask}
 
 
 @add_start_docstrings(
@@ -2206,6 +2206,37 @@ class PosBertForQuestionAnswering(PosBertPreTrainedModel):
         )
 
 
+class PosOnlyBertForMaskedLM(PosBertForMaskedLM):
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, layers=[], *model_args, **kwargs):
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        # Now apply the zeroing AFTER weights are loaded
+        with torch.no_grad():
+            for layer in layers :
+                model.bert.encoder.layer[layer].attention.self.query.weight[:, model.config.pos_size:] = 0.0
+                model.bert.encoder.layer[layer].attention.self.key.weight[:, model.config.pos_size:] = 0.0
+                model.bert.encoder.layer[layer].attention.self.query.bias[model.config.pos_size:] = 0.0
+                model.bert.encoder.layer[layer].attention.self.key.bias[model.config.pos_size:] = 0.0
+        return model
+
+
+class SemOnlyBertForMaskedLM(PosBertForMaskedLM):
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, layers=[], *model_args, **kwargs):
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        # Now apply the zeroing AFTER weights are loaded
+        with torch.no_grad():
+            for layer in layers :
+                model.bert.encoder.layer[layer].attention.self.query.weight[:, :model.config.pos_size] = 0.0
+                model.bert.encoder.layer[layer].attention.self.key.weight[:, :model.config.pos_size] = 0.0
+                model.bert.encoder.layer[layer].attention.self.query.bias[:model.config.pos_size] = 0.0
+                model.bert.encoder.layer[layer].attention.self.key.bias[:model.config.pos_size] = 0.0
+        return model
+
+
+
 __all__ = [
     "PosBertForMaskedLM",
     "PosBertForMultipleChoice",
@@ -2219,4 +2250,6 @@ __all__ = [
     "PosBertModel",
     "PosBertPreTrainedModel",
     "load_tf_weights_in_bert",
+    "PosOnlyBertForMaskedLM",
+    "SemOnlyBertForMaskedLM"
 ]
